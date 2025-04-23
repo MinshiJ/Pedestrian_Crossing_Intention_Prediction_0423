@@ -23,16 +23,17 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 assert len(gpus) > 0, "Not enough GPU hardware devices available"
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
-    tf.config.experimental.set_virtual_device_configuration(
-        gpu,
-        [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=7168)]
-    )
+    # tf.config.experimental.set_virtual_device_configuration(
+    #     gpu,
+    #     [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=7168)]
+    # )
 
 
 
 
 # path to JAAD dataset, please change to your local path
-path_jaad = "/home/steven/submission_T_IV/JAAD"
+# path_jaad = "/home/steven/submission_T_IV/JAAD"
+path_jaad = "/home/minshi/Pedestrian_Crossing_Intention_Prediction/JAAD"
 path_pie = "/media/steven/MEDIA/PIE"
 
 # config = tf.compat.v1.ConfigProto()
