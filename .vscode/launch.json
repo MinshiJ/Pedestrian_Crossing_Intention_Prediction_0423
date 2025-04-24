@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train_test.py with YAML config",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_test.py",
+            "args": [
+                "-c",
+                "config_files/ours/MASK_PCPA_jaad_2d.yaml"
+            ],
+            "console": "integratedTerminal",
+
+        }
+    ]
+}
