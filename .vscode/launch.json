@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "train_test.py with YAML config",
+            "name": "train_test.py",
             "type": "debugpy",
             "request": "launch",
             "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
@@ -11,8 +11,27 @@
                 "-c",
                 "config_files/ours/MASK_PCPA_jaad_2d.yaml"
             ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "test.py",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/test.py",
             "console": "integratedTerminal",
-
+            "justMyCode": true,
+            "variablePresentation": {
+                "function": "hide",
+                "special": "hide",
+                "class": "group",
+                "all": "group",
+                "protected": "hide",
+                "modules": "hide"
+            },
+            "args": [
+                "/home/minshi/Pedestrian_Crossing_Intention_Prediction/data/models/jaad/MASK_PCPA_4_2D/25Apr2025-22h07m23s"
+            ]
         }
     ]
 }

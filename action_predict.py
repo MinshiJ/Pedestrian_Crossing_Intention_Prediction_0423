@@ -1101,8 +1101,7 @@ class ActionPredict(object):
 
         test_data = self.get_data('test', data_test, {**opts['model_opts'], 'batch_size': 1})
 
-        test_results = test_model.predict(test_data['data'][0],
-                                          batch_size=1, verbose=1)
+        test_results = test_model.predict(test_data['data'][0], batch_size=1, verbose=1)
         acc = accuracy_score(test_data['data'][1], np.round(test_results))
         f1 = f1_score(test_data['data'][1], np.round(test_results))
         auc = roc_auc_score(test_data['data'][1], np.round(test_results))

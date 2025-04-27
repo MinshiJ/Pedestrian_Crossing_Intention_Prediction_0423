@@ -18,3 +18,5 @@ data/features/jaad/local_surround_vgg16_1.5
 data/features/jaad/mask_c3d_raw
 data/features/jaad/mask_cnn_vgg_raw
 data/models/
+model_imgs/
+train_log/
