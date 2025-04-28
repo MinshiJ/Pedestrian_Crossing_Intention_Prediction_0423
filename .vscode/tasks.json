@@ -9,10 +9,10 @@
           "-c",
           "mkdir -p /home/minshi/Pedestrian_Crossing_Intention_Prediction/train_log && /home/minshi/miniconda3/envs/tf26/bin/python -u /home/minshi/Pedestrian_Crossing_Intention_Prediction/train_test.py -c config_files/ours/MASK_PCPA_jaad_2d.yaml 2>&1 | stdbuf -oL -eL tr -d '\\r' | grep -vE --line-buffered '(ETA:|\\[[#-]+\\][[:space:]]+[0-9]+\\.[0-9]+%)' | tee /home/minshi/Pedestrian_Crossing_Intention_Prediction/train_log/train_log_$(date +%Y%m%d_%H%M%S).txt"
         ],
-        "presentation": {
-          "reveal": "always",
-          "panel": "shared"
-        },
+        // "presentation": {
+        //   "reveal": "always",
+        //   "panel": "shared"
+        // },
         "problemMatcher": []
       }
     ]

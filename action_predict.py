@@ -1099,6 +1099,16 @@ class ActionPredict(object):
         test_model = load_model(os.path.join(model_path, 'model.h5'))
         test_model.summary()
 
+        # for i, layer in enumerate(test_model.layers):
+        #     # 某些层的 input/output 可能是 list；统一转成 list 处理
+        #     inputs  = layer.input  if isinstance(layer.input,  (list, tuple)) else [layer.input]
+        #     outputs = layer.output if isinstance(layer.output, (list, tuple)) else [layer.output]
+
+        #     in_shapes  = [tuple(t.shape.as_list()) for t in inputs]
+        #     out_shapes = [tuple(t.shape.as_list()) for t in outputs]
+
+        #     print(f"{i:02d} | {layer.name:<30} {in_shapes} -> {out_shapes}")
+
         test_data = self.get_data('test', data_test, {**opts['model_opts'], 'batch_size': 1})
 
         test_results = test_model.predict(test_data['data'][0], batch_size=1, verbose=1)
@@ -5553,6 +5563,8 @@ class MASK_PCPA_4_2D(ActionPredict):
         net_model = Model(inputs=network_inputs,
                           outputs=model_output)
         net_model.summary()
+
+
         plot_model(net_model, to_file='model_imgs/MASK_PCPA_4_2D.png')
         return net_model
 
