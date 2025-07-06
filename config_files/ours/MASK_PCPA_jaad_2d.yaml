@@ -12,7 +12,7 @@ net_opts:
   backbone: vgg
 exp_opts:
   datasets: [jaad_beh, jaad_all]
-  # batch_size: [2, 2]
-  batch_size: [1, 1]
-  epochs: [60, 60]
+  batch_size: [2, 2]
+  # batch_size: [1, 1]
+  epochs: [1, 1]
   lr: [5.0e-07, 5.0e-07]

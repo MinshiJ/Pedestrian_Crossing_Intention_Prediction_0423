@@ -20,6 +20,14 @@ from tensorflow.keras.optimizers import Adam, SGD, RMSprop
 from tensorflow.keras import regularizers
 from tensorflow.keras import backend as K
 from tensorflow.keras.utils import Sequence
+
+try:
+    from tensorflow.keras.layers import LayerNormalization, MultiHeadAttention
+except ImportError:
+    # TensorFlow 2.6及以下版本使用这个路径
+    from tensorflow.keras.layers.experimental import LayerNormalization
+    from tensorflow.keras.layers import MultiHeadAttention
+# from keras_hub.modeling_layers import SinePositionEncoding
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
 from sklearn.svm import LinearSVC
@@ -1043,7 +1051,10 @@ class ActionPredict(object):
         train_model = self.get_model(data_train['data_params'])
 
         # Train the model
-        class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
+        if train_model.name == 'Transformer_depth':
+            class_w = None
+        else:
+            class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
         optimizer = self.get_optimizer(optimizer)(lr=lr)
         train_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
         ## reivse fit
@@ -1112,39 +1123,88 @@ class ActionPredict(object):
         test_data = self.get_data('test', data_test, {**opts['model_opts'], 'batch_size': 1})
 
         test_results = test_model.predict(test_data['data'][0], batch_size=1, verbose=1)
-        acc = accuracy_score(test_data['data'][1], np.round(test_results))
-        f1 = f1_score(test_data['data'][1], np.round(test_results))
-        auc = roc_auc_score(test_data['data'][1], np.round(test_results))
-        roc = roc_curve(test_data['data'][1], test_results)
-        precision = precision_score(test_data['data'][1], np.round(test_results))
-        recall = recall_score(test_data['data'][1], np.round(test_results))
-        pre_recall = precision_recall_curve(test_data['data'][1], test_results)
         
-        # THIS IS TEMPORARY, REMOVE BEFORE RELEASE
-        with open(os.path.join(model_path, 'test_output.pkl'), 'wb') as picklefile:
-            pickle.dump({'tte': test_data['tte'],
-                         'pid': test_data['ped_id'],
-                         'gt':test_data['data'][1],
-                         'y': test_results,
-                         'image': test_data['image']}, picklefile)
+        # 根据模型类型判断使用哪种处理方案
+        if opts['model_opts']['model'] == 'Transformer_depth':
+            # 方案2：Transformer_depth模型返回[intention, etraj]
+            intention_pred = test_results[0].flatten()  # 意图预测
+            etraj_pred = test_results[1]                # 轨迹预测
+            
+            # 获取真实标签
+            if hasattr(test_data['data'][0], 'labels'):
+                # 如果使用DataGenerator
+                intention_true = test_data['data'][0].labels[0].flatten()
+                etraj_true = test_data['data'][0].labels[1]
+            else:
+                # 直接从数据中获取
+                intention_true = test_data['data'][1][0].flatten()
+                etraj_true = test_data['data'][1][1]
+            
+            # 计算意图分类指标
+            acc = accuracy_score(intention_true, np.round(intention_pred))
+            f1 = f1_score(intention_true, np.round(intention_pred))
+            auc = roc_auc_score(intention_true, intention_pred)
+            precision = precision_score(intention_true, np.round(intention_pred))
+            recall = recall_score(intention_true, np.round(intention_pred))
+            
+            # 计算轨迹回归指标
+            from sklearn.metrics import mean_squared_error, mean_absolute_error
+            traj_mse = mean_squared_error(etraj_true, etraj_pred)
+            traj_mae = mean_absolute_error(etraj_true, etraj_pred)
+            
+            print('Intention - acc:{:.2f} auc:{:.2f} f1:{:.2f} precision:{:.2f} recall:{:.2f}'.format(acc, auc, f1, precision, recall))
+            print('Trajectory - MSE:{:.4f} MAE:{:.4f}'.format(traj_mse, traj_mae))
+            
+            save_results_path = os.path.join(model_path, '{:.2f}'.format(acc) + '.yaml')
+            # 保存结果时包含两个任务的指标
+            if not os.path.exists(save_results_path):
+                results = {'intention_acc': acc,
+                        'intention_auc': auc,
+                        'intention_f1': f1,
+                        'intention_precision': precision,
+                        'intention_recall': recall,
+                        'trajectory_mse': traj_mse,
+                        'trajectory_mae': traj_mae}
+                
+                with open(save_results_path, 'w') as fid:
+                    yaml.dump(results, fid)
+
+            return acc, auc, f1, precision, recall
+        else:
+            acc = accuracy_score(test_data['data'][1], np.round(test_results))
+            f1 = f1_score(test_data['data'][1], np.round(test_results))
+            auc = roc_auc_score(test_data['data'][1], np.round(test_results))
+            roc = roc_curve(test_data['data'][1], test_results)
+            precision = precision_score(test_data['data'][1], np.round(test_results))
+            recall = recall_score(test_data['data'][1], np.round(test_results))
+            pre_recall = precision_recall_curve(test_data['data'][1], test_results)
+
+            
+            # THIS IS TEMPORARY, REMOVE BEFORE RELEASE
+            with open(os.path.join(model_path, 'test_output.pkl'), 'wb') as picklefile:
+                pickle.dump({'tte': test_data['tte'],
+                            'pid': test_data['ped_id'],
+                            'gt':test_data['data'][1],
+                            'y': test_results,
+                            'image': test_data['image']}, picklefile)
 
 
-        print('acc:{:.2f} auc:{:.2f} f1:{:.2f} precision:{:.2f} recall:{:.2f}'.format(acc, auc, f1, precision, recall))
+            print('acc:{:.2f} auc:{:.2f} f1:{:.2f} precision:{:.2f} recall:{:.2f}'.format(acc, auc, f1, precision, recall))
 
-        save_results_path = os.path.join(model_path, '{:.2f}'.format(acc) + '.yaml')
+            save_results_path = os.path.join(model_path, '{:.2f}'.format(acc) + '.yaml')
 
-        if not os.path.exists(save_results_path):
-            results = {'acc': acc,
-                       'auc': auc,
-                       'f1': f1,
-                       'roc': roc,
-                       'precision': precision,
-                       'recall': recall,
-                       'pre_recall_curve': pre_recall}
+            if not os.path.exists(save_results_path):
+                results = {'acc': acc,
+                        'auc': auc,
+                        'f1': f1,
+                        'roc': roc,
+                        'precision': precision,
+                        'recall': recall,
+                        'pre_recall_curve': pre_recall}
 
-            with open(save_results_path, 'w') as fid:
-                yaml.dump(results, fid)
-        return acc, auc, f1, precision, recall
+                with open(save_results_path, 'w') as fid:
+                    yaml.dump(results, fid)
+            return acc, auc, f1, precision, recall
 
     def get_model(self, data_params):
         """
@@ -5668,5 +5728,312 @@ class DataGenerator(Sequence):
         return X
 
     def _generate_y(self, indices):
-        return np.array(self.labels[indices])
+        if 'depth' in self.input_type_list:
+            # 如果有深度图，labels[0]是行人过街意图标签，labels[1]是下一帧的xy坐标
+            intention_labels = np.array(self.labels[0][indices])
+            etraj_labels = np.array(self.labels[1][indices])  # 下一帧xy坐标
+            return [intention_labels, etraj_labels]
+        else:
+            return np.array(self.labels[indices])
 
+
+class Transformer_depth(ActionPredict):
+    """
+    多模态Transformer网络结构，支持行人过街意图与轨迹联合预测。
+    输入：Bounding Box, Depth, Vehicle Speed, Pedestrian Speed（均为序列）
+    输出：Intention（二分类），E-Traj（下一帧xy坐标）
+    """
+    def __init__(self, num_heads=4, ffn_units=256, dropout=0.2, **kwargs):
+        super().__init__(**kwargs)
+        self.num_heads = num_heads
+        self.ffn_units = ffn_units
+        self.dropout = dropout
+
+    def embedding_norm_block(self, input_tensor, name=None):
+        """Dense embedding + LayerNorm"""
+        x = Dense(self.ffn_units, activation=None, name=f'{name}_emb')(input_tensor)
+        x = LayerNormalization(name=f'{name}_ln')(x)
+        return x
+
+    def fem_block(self, x, name=None):
+        """Feature Enhancement Module: Norm -> 2层FFN -> Dropout&Add (残差)"""
+        shortcut = x
+        x = LayerNormalization(name=f'{name}_fem_norm')(x)
+        x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn1')(x)
+        x = Dropout(self.dropout, name=f'{name}_fem_drop1')(x)
+        x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn2')(x)
+        x = Dropout(self.dropout, name=f'{name}_fem_drop2')(x)
+        x = Add(name=f'{name}_fem_add')([shortcut, x])
+        return x
+
+    def cmim_block(self, x1, x2, name=None):
+        """Cross-Modal Interaction Module: 双分支多头注意力+残差"""
+        attn1 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.ffn_units, name=f'{name}_attn1')
+        attn2 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.ffn_units, name=f'{name}_attn2')
+        y1 = attn1(query=x1, value=x2, key=x2)
+        y2 = attn2(query=x2, value=x1, key=x1)
+        y1 = Add(name=f'{name}_add1')([x1, y1])
+        y2 = Add(name=f'{name}_add2')([x2, y2])
+        
+        return y1 + y2
+
+    def positional_encoding(self, x):
+        """正余弦位置编码"""
+        def compute_pos_encoding(inputs):
+            seq_len = tf.shape(inputs)[1]
+            d_model = tf.shape(inputs)[2]
+            
+            # 创建位置和维度索引
+            pos = tf.range(tf.cast(seq_len, tf.float32))[:, tf.newaxis]
+            i = tf.range(tf.cast(d_model, tf.float32))[tf.newaxis, :]
+            
+            # 计算角度率
+            angle_rates = 1 / tf.pow(10000.0, (2 * (i // 2)) / tf.cast(d_model, tf.float32))
+            angle_rads = pos * angle_rates
+            
+            # 对偶数索引应用sin，对奇数索引应用cos
+            sines = tf.sin(angle_rads[:, 0::2])
+            cosines = tf.cos(angle_rads[:, 1::2])
+            
+            # 拼接sin和cos
+            pos_encoding = tf.concat([sines, cosines], axis=-1)
+            
+            # 使用tf.cond处理维度匹配，避免直接使用Python if
+            def pad_encoding():
+                return tf.pad(pos_encoding, [[0, 0], [0, d_model - tf.shape(pos_encoding)[-1]]])
+            
+            def slice_encoding():
+                return pos_encoding[:, :d_model]
+            
+            pos_encoding_adjusted = tf.cond(
+                tf.shape(pos_encoding)[-1] < d_model,
+                pad_encoding,
+                slice_encoding
+            )
+            
+            # 添加batch维度并与输入相加
+            pos_encoding_adjusted = pos_encoding_adjusted[tf.newaxis, :, :]
+            return inputs + pos_encoding_adjusted
+
+        return Lambda(compute_pos_encoding, name="positional_encoding")(x)
+
+    def mhsa_block(self, x, name=None):
+        """Multi-Head Self Attention + 残差"""
+        shortcut = x
+        x = LayerNormalization(name=f'{name}_mhsa_norm')(x)
+        x = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.ffn_units, name=f'{name}_mhsa')(x, x)
+        x = Add(name=f'{name}_mhsa_add')([shortcut, x])
+        return x
+
+    def get_model(self, data_params):
+        bbox_in = Input(shape=(None, 4), name='bbox')
+        depth_in = Input(shape=(None, 1), name='depth')
+        vehspd_in = Input(shape=(None, 1), name='vehspd')
+        pedspd_in = Input(shape=(None, 3), name='pedspd')
+
+        bbox = self.embedding_norm_block(bbox_in, name='bbox')
+        depth = self.embedding_norm_block(depth_in, name='depth')
+        vehspd = self.embedding_norm_block(vehspd_in, name='vehspd')
+        pedspd = self.embedding_norm_block(pedspd_in, name='pedspd')
+
+        x = self.cmim_block(vehspd, pedspd, name='cmim_vehspd_pedspd')
+        x = self.fem_block(x, name='fem_vehspd_pedspd')
+        x = self.cmim_block(depth, x, name='cmim_depth_vehspd_pedspd')
+        x = self.fem_block(x, name='fem_depth_vehspd_pedspd')
+        x = self.cmim_block(bbox, x, name='cmim_all')
+        x = self.fem_block(x, name='fem_all')
+
+        cls_token = tf.zeros_like(x[:, :1, :])
+        x = Concatenate(axis=1, name='add_cls')([cls_token, x])
+
+        # Add positional encoding
+        x = self.positional_encoding(x)
+        # x = SinePositionEncoding()(x)
+
+        x = self.mhsa_block(x, name='mhsa')
+        x = self.fem_block(x, name='fem_after_mhsa')
+
+        cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
+        intention = Dense(1, activation='sigmoid', name='intention')(cls_out)
+        etraj = Dense(2, activation=None, name='etraj')(cls_out)
+
+        model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in], outputs=[intention, etraj], name='Transformer_depth')
+        return model
+
+    def get_data(self, data_type, data_raw, model_opts):
+        assert model_opts['obs_length'] == 16
+        model_opts['normalize_boxes'] = False
+        self._generator = model_opts.get('generator', False)
+        data_type_sizes_dict = {}
+        process = model_opts.get('process', True)
+        dataset = model_opts['dataset']
+        data, neg_count, pos_count = self.get_data_sequence(data_type, data_raw, model_opts)
+        # data = convert_array_of_lists_to_list_of_arrays()
+        data_type_sizes_dict['box'] = data['box'].shape[1:]
+        # if 'speed' in data.keys():
+        #     data_type_sizes_dict['speed'] = data['speed'].shape[1:]
+        # # if 'context_cnn' in data.keys():
+        #     data_type_sizes_dict['context_cnn'] = data['context_cnn'].shape[1:]
+
+        # Store the type and size of each image
+        _data = []
+        data_sizes = []
+        data_types = []
+
+        model_opts_3d = model_opts.copy()
+
+        for d_type in model_opts['obs_input_type']:
+            features = data[d_type]
+            feat_shape = features.shape[1:]
+            _data.append(features)
+            data_sizes.append(feat_shape)
+            data_types.append(d_type)
+        # create the final data file to be returned
+        if self._generator:
+            _data = (DataGenerator(data=_data,
+                                   labels=[data['crossing'], data['trajectory']],
+                                   data_sizes=data_sizes,
+                                   process=process,
+                                   global_pooling=None,
+                                   input_type_list=model_opts['obs_input_type'],
+                                   batch_size=model_opts['batch_size'],
+                                   shuffle=data_type != 'test',
+                                   to_fit=data_type != 'test'), data['crossing'])  # set y to None
+        # global_pooling=self._global_pooling,
+        else:
+            _data = (_data, data['crossing'])
+
+        return {'data': _data,
+                # 'ped_id': data['ped_id'],
+                'tte': data['tte'],
+                # 'image': data['image'],
+                'data_params': {'data_types': data_types, 'data_sizes': data_sizes},
+                'count': {'neg_count': neg_count, 'pos_count': pos_count}}
+
+    def get_data_sequence(self, data_type, data_raw, opts):
+        print('\n#####################################')
+        print('Generating raw data')
+        print('#####################################')
+        d = {'depth': data_raw['depth'].copy(),
+             'box': data_raw['bbox'].copy(),
+             'ped_speed': data_raw['ped_speed'].copy(),
+             'vehicle_speed': data_raw['vehicle_speed'].copy(),
+             'crossing': data_raw['crossing'].copy(),             'image_dimension': data_raw['image_dimension'].copy()}
+
+        balance = opts['balance_data'] if data_type == 'train' else False
+        obs_length = opts['obs_length']
+        time_to_event = opts['time_to_event']
+        normalize = opts['normalize_boxes']
+
+        d['box_org'] = d['box'].copy()
+        d['tte'] = []
+        d['trajectory'] = []  # 存储轨迹数据
+
+        if isinstance(time_to_event, int):
+            for k in d.keys():
+                for i in range(len(d[k])):
+                    d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
+            d['tte'] = [[time_to_event]]*len(data_raw['bbox'])
+        else:
+            overlap = opts['overlap'] # if data_type == 'train' else 0.0
+            olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
+            olap_res = 1 if olap_res < 1 else olap_res
+            crossing_seqs = []
+            image_dim_seqs = []
+            trajectory_seqs = []
+            for k in d.keys():
+                seqs = []
+                for idx, seq in enumerate(d[k]):
+                    if k == 'box':
+                        # 检查序列长度是否足够
+                        if len(seq) < obs_length + time_to_event[0]:
+                            # print(f"Warning: Sequence length {len(seq)} is too short for obs_length {obs_length} and time_to_event {time_to_event}")
+                            continue  # 跳过这个序列
+                        start_idx = len(seq) - obs_length - time_to_event[1]
+                        end_idx = len(seq) - obs_length - time_to_event[0]
+                        # 确保索引不为负数
+                        if start_idx < 0:
+                            start_idx = 0
+                        if end_idx < start_idx:
+                            continue  # 跳过无效范围
+                        num_samples = len(range(start_idx, end_idx + 1, olap_res))
+                        crossing_seqs.extend([d['crossing'][idx] for _ in range(num_samples)])
+                        image_dim_seqs.extend([d['image_dimension'][idx] for _ in range(num_samples)])
+                        seqs.extend([seq[i:i + obs_length] for i in
+                                range(start_idx, end_idx + 1, olap_res)])
+                        trajectory_seqs.extend([[(seq[i + obs_length][0] + seq[i + obs_length][1]) / 2,
+                                                 (seq[i + obs_length][2] + seq[i + obs_length][3]) / 2] for i in
+                                range(start_idx, end_idx + 1, olap_res)])
+                        # d['crossing'] = crossing_seqs
+                        # d['image_dimension'] = image_dim_seqs
+                        
+                    elif k != 'crossing' and k != 'image_dimension' and k != 'trajectory':
+                        if len(seq) < obs_length + time_to_event[0]:
+                            # print(f"Warning: Sequence length {len(seq)} is too short for obs_length {obs_length} and time_to_event {time_to_event}")
+                            continue  # 跳过这个序列
+                        start_idx = len(seq) - obs_length - time_to_event[1]
+                        end_idx = len(seq) - obs_length - time_to_event[0]
+                        # 确保索引不为负数
+                        if start_idx < 0:
+                            start_idx = 0
+                        if end_idx < start_idx:
+                            continue  # 跳过无效范围
+                        seqs.extend([seq[i:i + obs_length] for i in
+                                range(start_idx, end_idx + 1, olap_res)])
+                d[k] = seqs
+            d['crossing'] = crossing_seqs
+            d['image_dimension'] = image_dim_seqs   
+            d['trajectory'] = trajectory_seqs
+
+            for seq in data_raw['bbox']:
+                start_idx = len(seq) - obs_length - time_to_event[1]
+                end_idx = len(seq) - obs_length - time_to_event[0]
+                d['tte'].extend([[len(seq) - (i + obs_length)] for i in
+                                range(start_idx, end_idx + 1, olap_res)])
+        # if normalize:
+        #     for k in d.keys():
+        #         if k != 'tte':
+        #             if k != 'box' and k != 'center':
+        #                 for i in range(len(d[k])):
+        #                     d[k][i] = d[k][i][1:]
+        #             else:
+        #                 for i in range(len(d[k])):
+        #                     d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
+        #         d[k] = np.array(d[k])
+        # else:
+        for k in d.keys():
+        # if k != 'tte':
+            for i in range(len(d[k])):
+                if not isinstance(d[k][i], np.ndarray):
+                    d[k][i] = np.array(d[k][i])
+        # for k in d.keys():
+            d[k] = np.array(d[k])
+
+        # d['crossing'] = np.array(d['crossing'])[:, 0, :]
+        pos_count = np.count_nonzero(d['crossing'])
+        neg_count = len(d['crossing']) - pos_count
+        print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
+
+        return d, neg_count, pos_count
+    # def train(self, data_train, data_val=None, batch_size=32, epochs=60, lr=0.0001, optimizer='adam', learning_scheduler=None, model_opts=None):
+    #     model = self.get_model({})
+    #     model.compile(
+    #         optimizer=optimizer,
+    #         loss={'intention': 'binary_crossentropy', 'etraj': 'mse'},
+    #         metrics={'intention': 'accuracy', 'etraj': 'mse'}
+    #     )
+    #     x_train, y_train, _ = self.get_data('train', data_train, model_opts)
+    #     if data_val is not None:
+    #         x_val, y_val, _ = self.get_data('val', data_val, model_opts)
+    #         model.fit(x_train, y_train, validation_data=(x_val, y_val), batch_size=batch_size, epochs=epochs)
+    #     else:
+    #         model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs)
+    #     return model
+
+    # def test(self, data_test, model_path=''):
+    #     model = self.get_model({})
+    #     if model_path:
+    #         model.load_weights(model_path)
+    #     x_test, y_test, _ = self.get_data('test', data_test, None)
+    #     results = model.evaluate(x_test, y_test)
+    #     return results

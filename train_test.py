@@ -16,6 +16,9 @@ from action_predict import ActionPredict
 from jaad_data import JAAD
 # if use PIE data:
 from pie_data import PIE
+# if use WATCH_PED data:
+from watch_ped_data import WATCH_PED
+
 import tensorflow as tf
 # tf.test.is_gpu_available()
 
@@ -35,7 +38,7 @@ for gpu in gpus:
 # path_jaad = "/home/steven/submission_T_IV/JAAD"
 path_jaad = "/home/minshi/Pedestrian_Crossing_Intention_Prediction/JAAD"
 path_pie = "/media/steven/MEDIA/PIE"
-
+path_watch_ped = "/home/minshi/Pedestrian_Crossing_Intention_Prediction/Watch_Ped"
 # config = tf.compat.v1.ConfigProto()
 # # config.gpu_options.per_process_gpu_memory_fraction=0.8
 # config.gpu_options.allow_growth = True
@@ -155,6 +158,10 @@ def run(config_file=None):
             # if use local path
             imdb = JAAD(data_path=path_jaad)
 
+        elif configs['model_opts']['dataset'] in ["watch_ped", "watch"]:
+
+            imdb = WATCH_PED(data_path=path_watch_ped)
+
         # get sequences
         beh_seq_train = imdb.generate_data_trajectory_sequence('train', **configs['data_opts'])
         beh_seq_val = None
@@ -172,14 +179,15 @@ def run(config_file=None):
         acc, auc, f1, precision, recall = method_class.test(beh_seq_test, saved_files_path)
 
         # save the results
-        data = {}
-        data['results'] = {}
-        data['results']['acc'] = float(acc)
-        data['results']['auc'] = float(auc)
-        data['results']['f1'] = float(f1)
-        data['results']['precision'] = float(precision)
-        data['results']['recall'] = float(recall)
-        write_to_yaml(yaml_path=os.path.join(saved_files_path, 'results.yaml'), data=data)
+        # data = {}
+        # data['results'] = {}
+        # data['results']['acc'] = float(acc)
+        # data['results']['auc'] = float(auc)
+        # data['results']['f1'] = float(f1)
+        # data['results']['precision'] = float(precision)
+        # data['results']['recall'] = float(recall)
+
+        # write_to_yaml(yaml_path=os.path.join(saved_files_path, 'results.yaml'), data=data)
 
         data = configs
         write_to_yaml(yaml_path=os.path.join(saved_files_path, 'configs.yaml'), data=data)
@@ -217,7 +225,10 @@ if __name__ == '__main__':
         elif o in ['-c', '--config_file']:
             config_file = a
 
-    # if neither the config file or model name are provided
+    # if neither the config file or 
+# physical_devices = tf.config.experimental.list_physical_devices('GPU')
+# assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
+# config = tf.config.experimental.set_memory_growth(physical_devices[0], Trmodel name are provided
     if not config_file:
         print('\x1b[1;37;41m' + 'ERROR: Provide path to config file!' + '\x1b[0m')
         usage()

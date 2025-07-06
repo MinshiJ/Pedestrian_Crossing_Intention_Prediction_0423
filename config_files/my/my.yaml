@@ -1,17 +1,15 @@
 model_opts:
-  model: MASK_PCPA_4_2D
-  obs_input_type: [local_context_cnn, mask_cnn, pose, box, speed]
+  model: Transformer_depth
+  obs_input_type: [box, depth, vehicle_speed, ped_speed]
   apply_class_weights: True
   normalize_boxes: True
   generator: True
+
 net_opts:
   num_hidden_units: 256
-  global_pooling: avg
   regularizer_val: 0.0001
-  cell_type: gru
-  backbone: vgg
 exp_opts:
-  datasets: [pie]
+  datasets: [watch_ped]
   batch_size: [2]
   epochs: [1]
-  lr: [5.0e-05]
+  lr: [5.0e-06]

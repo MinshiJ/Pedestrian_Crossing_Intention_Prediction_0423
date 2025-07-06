@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "train_test.py",
+            "name": "train_test.py(jaad)",
             "type": "debugpy",
             "request": "launch",
             "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
@@ -10,6 +10,18 @@
             "args": [
                 "-c",
                 "config_files/ours/MASK_PCPA_jaad_2d.yaml"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "train_test.py(watch_ped)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_test.py",
+            "args": [
+                "-c",
+                "config_files/my/my.yaml"
             ],
             "console": "integratedTerminal"
         },
