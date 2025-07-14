@@ -1,0 +1,16 @@
+model_opts:
+  model: Transformer_depth
+  obs_input_type: [box, depth, vehicle_speed, ped_speed]
+  apply_class_weights: True
+  normalize_boxes: True
+  generator: True
+
+net_opts:
+  num_hidden_units: 256
+  regularizer_val: 0.0001
+  dropout: 0.3
+exp_opts:
+  datasets: [watch_ped]
+  batch_size: [32]
+  epochs: [50]
+  lr: [5.0e-05]

@@ -125,7 +125,6 @@ def run(config_file=None):
         configs['train_opts']['batch_size'] = model_configs['exp_opts']['batch_size'][dataset_idx]
         configs['train_opts']['lr'] = model_configs['exp_opts']['lr'][dataset_idx]
         configs['train_opts']['epochs'] = model_configs['exp_opts']['epochs'][dataset_idx]
-
         model_name = configs['model_opts']['model']
         # Remove speed in case the dataset is jaad
         if 'RNN' in model_name and 'jaad' in dataset:
@@ -170,7 +169,7 @@ def run(config_file=None):
         beh_seq_test = imdb.generate_data_trajectory_sequence('test', **configs['data_opts']) ## load_dataset
 
         # get the model
-        method_class = action_prediction(configs['model_opts']['model'])(**configs['net_opts'])
+        method_class = action_prediction(configs['model_opts']['model'])(dataset = configs['model_opts']['dataset'], sample_type = configs['data_opts']['sample_type'], **configs['net_opts'])
 
         # train and save the model
         saved_files_path = method_class.train(beh_seq_train, beh_seq_val, **configs['train_opts'],
