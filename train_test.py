@@ -37,7 +37,7 @@ for gpu in gpus:
 # path to JAAD dataset, please change to your local path
 # path_jaad = "/home/steven/submission_T_IV/JAAD"
 path_jaad = "/home/minshi/Pedestrian_Crossing_Intention_Prediction/JAAD"
-path_pie = "/media/steven/MEDIA/PIE"
+path_pie = "/media/minshi/WD_2T/PIE/annotations"
 path_watch_ped = "/home/minshi/Pedestrian_Crossing_Intention_Prediction/Watch_Ped"
 # config = tf.compat.v1.ConfigProto()
 # # config.gpu_options.per_process_gpu_memory_fraction=0.8

@@ -3,18 +3,6 @@
     
     "configurations": [
         {
-            "name": "train_depth_jaad",
-            "type": "debugpy",
-            "request": "launch",
-            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
-            "program": "${workspaceFolder}/train_test.py",
-            "args": [
-                "-c",
-                "config_files/my/my_jaad.yaml"
-            ],
-            "console": "integratedTerminal"
-        },
-        {
             "name": "train_depth_watch_ped",
             "type": "debugpy",
             "request": "launch",
@@ -27,6 +15,30 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "train_depth_jaad",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_test.py",
+            "args": [
+                "-c",
+                "config_files/my/my_jaad.yaml"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "train_depth_pie",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_test.py",
+            "args": [
+                "-c",
+                "config_files/my/my_pie.yaml"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
             "name": "train_test.py(jaad)",
             "type": "debugpy",
             "request": "launch",
@@ -35,6 +47,18 @@
             "args": [
                 "-c",
                 "config_files/ours/MASK_PCPA_jaad_2d.yaml"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "train_test.py(pie)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_test.py",
+            "args": [
+                "-c",
+                "config_files_pie/ours/MASK_PCPA_jaad_2d.yaml"
             ],
             "console": "integratedTerminal"
         },

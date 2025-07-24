@@ -1253,13 +1253,14 @@ class ActionPredict(object):
             save_results_path = os.path.join(model_path, '{:.2f}'.format(acc) + '.yaml')
 
             if not os.path.exists(save_results_path):
-                results = {'acc': acc,
-                        'auc': auc,
-                        'f1': f1,
-                        'roc': roc,
-                        'precision': precision,
-                        'recall': recall,
-                        'pre_recall_curve': pre_recall}
+                results = {'acc': '{:.4f}'.format(acc),
+                        'auc': '{:.4f}'.format(auc),
+                        'f1': '{:.4f}'.format(f1),
+                        # 'roc': '{:.4f}'.format(roc),
+                        'precision': '{:.4f}'.format(precision),
+                        'recall': '{:.4f}'.format(recall),
+                        # 'pre_recall_curve': '{:.4f}'.format(pre_recall)
+                        }
 
                 with open(save_results_path, 'w') as fid:
                     yaml.dump(results, fid)
@@ -5952,7 +5953,7 @@ class Transformer_depth(ActionPredict):
         data_types = []
 
         # model_opts_3d = model_opts.copy()
-        if model_opts['dataset'] == 'jaad':
+        if model_opts['dataset'] == 'jaad' or 'pie':
             data['vehicle_speed'] = data['speed']
             data['ped_speed'] = data['ped_center_diff']
 
@@ -5988,6 +5989,8 @@ class Transformer_depth(ActionPredict):
         print('\n#####################################')
         print('Generating raw data')
         print('#####################################')
+##########################################################################################
+# 处理JAAD数据集
         if opts['dataset'] == 'jaad':
             d = {'center': data_raw['center'].copy(),
                 'box': data_raw['bbox'].copy(),
@@ -6047,7 +6050,7 @@ class Transformer_depth(ActionPredict):
 
                 start_idx = len(seq) - obs_length - time_to_event[1]
                 end_idx = len(seq) - obs_length - time_to_event[0]
-                d['ped_center_diff'].extend([seq[i:i + obs_length] for i in
+                d['ped_center_diff'].extend([diffs[i:i + obs_length] for i in
                                              range(start_idx, end_idx + 1, olap_res)])
 
 
@@ -6143,6 +6146,165 @@ class Transformer_depth(ActionPredict):
             neg_count = len(d['crossing']) - pos_count
             print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
 
+##########################################################################################
+# 处理PIE数据集
+        if opts['dataset'] == 'pie':
+            d = {'center': data_raw['center'].copy(),
+                'box': data_raw['bbox'].copy(),
+                'ped_id': data_raw['pid'].copy(),
+                'crossing': data_raw['activities'].copy(),
+                'image': data_raw['image'].copy()}
+
+            balance = opts['balance_data'] if data_type == 'train' else False
+            obs_length = opts['obs_length']
+            time_to_event = opts['time_to_event']
+            normalize = opts['normalize_boxes']
+
+            try:
+                d['speed'] = data_raw['obd_speed'].copy()
+            except KeyError:
+                d['speed'] = data_raw['vehicle_act'].copy()
+                print('Jaad dataset does not have speed information')
+                print('Vehicle actions are used instead')
+            if balance:
+                self.balance_data_samples(d, data_raw['image_dimension'][0])
+            d['box_org'] = d['box'].copy()
+            d['tte'] = []
+
+            if isinstance(time_to_event, int):
+                for k in d.keys():
+                    for i in range(len(d[k])):
+                        d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
+                d['tte'] = [[time_to_event]]*len(data_raw['bbox'])
+            else:
+                overlap = opts['overlap'] # if data_type == 'train' else 0.0
+                olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
+                olap_res = 1 if olap_res < 1 else olap_res
+                for k in d.keys():
+                    seqs = []
+                    for seq in d[k]:
+                        start_idx = len(seq) - obs_length - time_to_event[1]
+                        end_idx = len(seq) - obs_length - time_to_event[0]
+                        seqs.extend([seq[i:i + obs_length] for i in
+                                    range(start_idx, end_idx + 1, olap_res)])
+
+                        # # 计算序列长度
+                        # sequence_length = len([seq[i:i + obs_length] for i in
+                        #             range(start_idx, end_idx + 1, olap_res)])
+                        # # 记录到文件
+                        # with open(f'sequence_lengths_{data_type}_{self.dataset}_{self.sample}.txt', 'a') as log_file:
+                        #     log_file.write(f"{start_idx:4d}, {end_idx:4d}, {sequence_length:4d}\n")
+                    d[k] = seqs
+
+            d['ped_center_diff'] = []
+            for idx, seq in enumerate(data_raw['center']):
+                diffs = []
+                for j in range(1, len(seq)):
+                    diff = np.array(seq[j]) - np.array(seq[j-1])
+                    diffs.append(diff)
+                # 将第一个差值复制放在开头以保持序列长度
+                diffs = [diffs[0]] + diffs
+
+                start_idx = len(seq) - obs_length - time_to_event[1]
+                end_idx = len(seq) - obs_length - time_to_event[0]
+                d['ped_center_diff'].extend([diffs[i:i + obs_length] for i in
+                                             range(start_idx, end_idx + 1, olap_res)])
+
+
+            # 计算深度信息，先检查缓存
+            import os
+            import pickle
+            
+            cache_dir = 'PIE/data_cache'
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+            
+            # 生成唯一的缓存文件名
+            cache_filename = f'depth_{self.dataset}_obs{obs_length}_tte{time_to_event[0]}-{time_to_event[1]}_overlap{overlap}.pkl'
+            cache_path = os.path.join(cache_dir, cache_filename)
+            
+            # 检查缓存文件是否存在
+            if os.path.exists(cache_path):
+                print(f"Loading depth data from cache: {cache_path}")
+                with open(cache_path, 'rb') as f:
+                    d['depth'] = pickle.load(f)
+                print(f"Loaded {len(d['depth'])} depth sequences from cache")
+            else:
+                print(f"Computing depth data and saving to cache: {cache_path}")
+                # 计算深度信息
+                d['depth'] = []
+                for idx, seq in enumerate(data_raw['bbox']):
+                    start_idx = len(seq) - obs_length - time_to_event[1]
+                    end_idx = len(seq) - obs_length - time_to_event[0]
+                    d['tte'].extend([[len(seq) - (i + obs_length)] for i in
+                                    range(start_idx, end_idx + 1, olap_res)])
+                    images = data_raw['image'][idx][start_idx:end_idx + obs_length + 1]
+                    boxes = data_raw['bbox'][idx][start_idx:end_idx + obs_length + 1]
+                    depth_seq = []
+                    for image_path, box in zip(images, boxes):
+                        # 修改图像路径：将 'images' 替换为 'image_depth_gray'
+                        depth_image_path = image_path.replace('/images/', '/images_depth_gray/')     
+                        # 读取图像
+                        img = cv2.imread(depth_image_path)
+                        # if img is None:
+                        #     print(f"Warning: Cannot read image {depth_image_path}")
+                        #     # depth_seq.append(0.0)  # 或者跳过
+                        #     continue
+                        # 获取图像尺寸和边界框坐标
+                        img_height, img_width = img.shape[:2]
+                        x1, y1, x2, y2 = box
+                        
+                        # 确保边界框坐标在有效范围内
+                        x1 = max(0, min(int(x1), img_width - 1))
+                        y1 = max(0, min(int(y1), img_height - 1))
+                        x2 = max(x1 + 1, min(int(x2), img_width))
+                        y2 = max(y1 + 1, min(int(y2), img_height))
+                        
+                        # 提取边界框区域
+                        bbox_region = img[y1:y2, x1:x2]
+                        
+                        if bbox_region.size == 0:
+                            print(f"Warning: Empty bbox region for image {image_path}")
+                            depth_seq.append(None)
+                            continue
+                        
+                        # 计算像素平均值（所有通道的平均值）
+                        pixel_mean = np.mean(bbox_region)
+                        depth_seq.append(float(pixel_mean))
+                    d['depth'].extend([depth_seq[i:i + obs_length] for i in
+                                    range(0, end_idx - start_idx + 1, olap_res)])
+                    
+                    # 显示进度
+                    if (idx + 1) % 10 == 0:
+                        print(f"Processed depth for {idx + 1}/{len(data_raw['bbox'])} sequences")
+
+                # 保存到缓存
+                print(f"Saving depth data to cache: {cache_path}")
+                with open(cache_path, 'wb') as f:
+                    pickle.dump(d['depth'], f, pickle.HIGHEST_PROTOCOL)
+                print(f"Saved {len(d['depth'])} depth sequences to cache")        
+            
+            if normalize:
+                for k in d.keys():
+                    if k != 'tte':
+                        if k != 'box' and k != 'center':
+                            for i in range(len(d[k])):
+                                d[k][i] = d[k][i][1:]
+                        else:
+                            for i in range(len(d[k])):
+                                d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
+                    d[k] = np.array(d[k])
+            else:
+                for k in d.keys():
+                    d[k] = np.array(d[k])
+
+            d['crossing'] = np.array(d['crossing'])[:, 0, :]
+            pos_count = np.count_nonzero(d['crossing'])
+            neg_count = len(d['crossing']) - pos_count
+            print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
+
+##########################################################################################
+# 处理Watch_Ped数据集
         if 'watch' in opts['dataset']:
             d = {'depth': data_raw['depth'].copy(),
                 'box': data_raw['bbox'].copy(),
