@@ -8,10 +8,37 @@ model_opts:
 net_opts:
   num_hidden_units: 256
   regularizer_val: 0.0001
-  dropout: 0.25
+  dropout: 0.45
 exp_opts:
   datasets: [pie]
-  batch_size: [32]
-  epochs: [1]
-  # lr: [5.0e-05]
-  lr: [1.0e-04]
+  batch_size: [8]
+  epochs: [60]
+  lr: [5.0e-05]
+  # lr: [1.0e-04]
+# train_opts:
+#   learning_scheduler:
+#         {
+#     'early_stop': {
+#       'monitor': 'val_loss',
+#       'min_delta': 0.0001,
+#       restore_best_weights=True,
+#       'patience': 15,
+#       'verbose': 1
+#     },
+#      'plateau': {
+#       'monitor': 'val_loss',
+#       'factor': 0.5,
+#       'patience': 8,
+#       'cooldown': 1,
+#       'min_lr': 1e-7,
+#       'verbose': 1
+#     },
+#       'checkpoint': {
+#       'monitor': 'val_loss',
+#       'save_best_only': True,
+#       'save_weights_only': True,
+#       'mode': 'min',
+#       'verbose': 1,
+#       'filepath': 'checkpoints/best.ckpt'
+#     }
+# }

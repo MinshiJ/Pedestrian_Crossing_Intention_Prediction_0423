@@ -33,3 +33,28 @@ train_opts:
   epochs: 20
   lr: 0.000005
   learning_scheduler:
+        {
+    # 'early_stop': {
+    #   'monitor': 'val_loss',
+    #   'min_delta': 0.0001,
+    #   'restore_best_weights': 'True',
+    #   'patience': 15,
+    #   'verbose': 1
+    # },
+     'plateau': {
+      'monitor': 'val_loss',
+      'factor': 0.2,
+      'patience': 5,
+      'cooldown': 1,
+      'min_lr': 1e-7,
+      'verbose': 1
+    },
+    #   'checkpoint': {
+    #   'monitor': 'val_loss',
+    #   'save_best_only': True,
+    #   'save_weights_only': True,
+    #   'mode': 'min',
+    #   'verbose': 1,
+    #   'filepath': 'checkpoints/best.ckpt'
+    # }
+  }

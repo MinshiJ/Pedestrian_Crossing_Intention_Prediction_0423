@@ -21,6 +21,7 @@ from tensorflow.keras.metrics import Precision, Recall
 from tensorflow.keras import regularizers
 from tensorflow.keras import backend as K
 from tensorflow.keras.utils import Sequence
+from tensorflow.keras.activations import gelu
 
 try:
     from tensorflow.keras.layers import LayerNormalization, MultiHeadAttention
@@ -947,8 +948,8 @@ class ActionPredict(object):
 
         total = sample_count['neg_count'] + sample_count['pos_count']
         # formula from sklearn
-        #neg_weight = (1 / sample_count['neg_count']) * (total) / 2.0
-        #pos_weight = (1 / sample_count['pos_count']) * (total) / 2.0
+        # neg_weight = (1 / sample_count['neg_count']) * (total) / 2.0
+        # pos_weight = (1 / sample_count['pos_count']) * (total) / 2.0
         
         # use simple ratio
         neg_weight = sample_count['pos_count']/total
@@ -967,29 +968,69 @@ class ActionPredict(object):
         """
         callbacks = None
 
-        # Set up learning schedulers
+        # # Set up learning schedulers
+        # if learning_scheduler:
+        #     callbacks = []
+            # if 'early_stop' in learning_scheduler:
+            #     default_params = {'monitor': 'val_loss','restore_best_weights': True,
+            #                       'min_delta': 1.0, 'patience': 5,
+            #                       'verbose': 1}
+            #     default_params.update(learning_scheduler['early_stop'])
+            #     callbacks.append(EarlyStopping(**default_params))
+
+        #     if 'plateau' in learning_scheduler:
+        #         default_params = {'monitor': 'val_loss',
+        #                           'factor': 0.2, 'patience': 5,
+        #                           'cooldown': 0,
+        #                           'min_lr': 1e-08, 'verbose': 1}
+        #         default_params.update(learning_scheduler['plateau'])
+        #         callbacks.append(ReduceLROnPlateau(**default_params))
+
+
+        #     if 'checkpoint' in learning_scheduler:
+        #         default_params = {'filepath': model_path, 'monitor': 'val_loss',
+        #                           'mode': 'min',
+        #                           'save_best_only': True, 'save_weights_only': False,
+        #                           'save_freq': 'epoch', 'verbose': 2}
+        #         default_params.update(learning_scheduler['checkpoint'])
+        #         callbacks.append(ModelCheckpoint(**default_params))
+
         if learning_scheduler:
             callbacks = []
             if 'early_stop' in learning_scheduler:
-                default_params = {'monitor': 'val_loss',
+            # —— 1. 提前停止：连续 patience 轮 val_loss 不下降就早停
+                default_params = {'monitor': 'val_loss','restore_best_weights': True,
                                   'min_delta': 1.0, 'patience': 5,
                                   'verbose': 1}
                 default_params.update(learning_scheduler['early_stop'])
                 callbacks.append(EarlyStopping(**default_params))
+            
 
-            if 'plateau' in learning_scheduler:
-                default_params = {'monitor': 'val_loss',
-                                  'factor': 0.2, 'patience': 5,
-                                  'min_lr': 1e-08, 'verbose': 1}
-                default_params.update(learning_scheduler['plateau'])
-                callbacks.append(ReduceLROnPlateau(**default_params))
+        # —— 2. 学习率衰减
+        if 'plateau' in learning_scheduler:
+            reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+                # monitor='val_loss',
+                monitor='loss',
+                mode='min',
+                factor=0.2,               # 学习率下降幅度大
+                patience=5,               # 多等几轮
+                cooldown=1,               # 给它缓一轮
+                min_lr=1e-7,
+                verbose=1)
+            callbacks.append(reduce_lr)
 
-            if 'checkpoint' in learning_scheduler:
-                default_params = {'filepath': model_path, 'monitor': 'val_loss',
-                                  'save_best_only': True, 'save_weights_only': False,
-                                  'save_freq': 'epoch', 'verbose': 2}
-                default_params.update(learning_scheduler['checkpoint'])
-                callbacks.append(ModelCheckpoint(**default_params))
+        # —— 3. 模型断点保存：只在 val_loss 改善时保存
+        ckpt = tf.keras.callbacks.ModelCheckpoint(
+            filepath='checkpoints/best.ckpt',
+            monitor='val_loss',
+            mode='min',
+            save_best_only=True,
+            save_weights_only=True,
+            verbose=1)
+
+        # callbacks = [early_stop, reduce_lr, ckpt]
+        # callbacks = [reduce_lr, ckpt]
+        callbacks = [reduce_lr]
 
         return callbacks
 
@@ -1052,33 +1093,31 @@ class ActionPredict(object):
         train_model = self.get_model(data_train['data_params'])
 
         # Train the model
-        if train_model.name == 'Transformer_depth':
-            # class_w = None
-            # train_model.compile(
-            #     optimizer=optimizer,
-            #     loss={
-            #         'intention': 'binary_crossentropy',  # 二分类任务
-            #         'etraj': 'mse'                       # 回归任务
-            #     },
-            #     loss_weights={
-            #         'intention': 1
-            #         ,    # 意图预测权重
-            #         'etraj': 0        # 轨迹预测权重（可调节）
-            #     },
-            #     metrics={
-            #         'intention': ['accuracy', Precision(name='precision'), Recall(name='recall')],
-            #         'etraj': ['mae']
-            #     }
-            # )
-            class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
-            train_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
-        else:
-            class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
-            train_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+        class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
         optimizer = self.get_optimizer(optimizer)(lr=lr)
+        train_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
         ## reivse fit
-        callbacks = self.get_callbacks(learning_scheduler, model_path)
-
+        # callbacks = self.get_callbacks(learning_scheduler, model_path)
+        callbacks = []
+        # reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+        #     # monitor='val_loss',
+        #     monitor='loss',
+        #     mode='min',
+        #     factor=0.2,               # 学习率下降幅度大
+        #     patience=5,               # 多等几轮
+        #     cooldown=1,               # 给它缓一轮
+        #     min_lr=1e-7,
+        #     verbose=1)
+        # callbacks.append(reduce_lr)
+        ckpt = tf.keras.callbacks.ModelCheckpoint(
+            filepath='checkpoints/best.ckpt',
+            monitor='val_accuracy',
+            mode='max',
+            save_best_only=True,
+            save_weights_only=True,
+            verbose=1)
+        callbacks.append(ckpt)
+        
         # data_val = data_val.batch(batch_size)
         history = train_model.fit(x=data_train['data'][0],
                                   y=None if self._generator else data_train['data'][1],
@@ -1088,7 +1127,7 @@ class ActionPredict(object):
                                   class_weight=class_w,
                                   verbose=1,
                                   callbacks=callbacks)
-        print(history.history.keys())
+        # print(history.history.keys())
 
         # intention 是分类任务
         # plt.plot(history.history['intention_loss'], label='Train Loss (intention)')
@@ -5815,17 +5854,29 @@ class Transformer_depth(ActionPredict):
 
     def embedding_norm_block(self, input_tensor, name=None):
         """Dense embedding + LayerNorm"""
-        x = Dense(self.ffn_units, activation=None, name=f'{name}_emb')(input_tensor)
+        # x = Dense(self.ffn_units, activation=None, name=f'{name}_emb')(input_tensor)
+        x = Dense(self.ffn_units, activation=gelu, name=f'{name}_emb')(input_tensor)
         x = LayerNormalization(name=f'{name}_ln')(x)
         return x
 
+    # def fem_block(self, x, name=None):
+    #     """Feature Enhancement Module: Norm -> 2层FFN -> Dropout&Add (残差)"""
+    #     shortcut = x
+    #     x = LayerNormalization(name=f'{name}_fem_norm')(x)
+    #     x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn1')(x)
+    #     x = Dropout(self.dropout, name=f'{name}_fem_drop1')(x)
+    #     x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn2')(x)
+    #     x = Dropout(self.dropout, name=f'{name}_fem_drop2')(x)
+    #     x = Add(name=f'{name}_fem_add')([shortcut, x])
+    #     return x
+
     def fem_block(self, x, name=None):
-        """Feature Enhancement Module: Norm -> 2层FFN -> Dropout&Add (残差)"""
+        """Feature Enhancement Module: PreNorm -> FFN (GELU+Linear) -> Residual Add"""
         shortcut = x
         x = LayerNormalization(name=f'{name}_fem_norm')(x)
-        x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn1')(x)
+        x = Dense(self.ffn_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn1')(x)
         x = Dropout(self.dropout, name=f'{name}_fem_drop1')(x)
-        x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn2')(x)
+        x = Dense(self.ffn_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn2')(x)
         x = Dropout(self.dropout, name=f'{name}_fem_drop2')(x)
         x = Add(name=f'{name}_fem_add')([shortcut, x])
         return x
@@ -5838,8 +5889,26 @@ class Transformer_depth(ActionPredict):
         y2 = attn2(query=x2, value=x1, key=x1)
         y1 = Add(name=f'{name}_add1')([x1, y1])
         y2 = Add(name=f'{name}_add2')([x2, y2])
-        
         return y1 + y2
+
+    # def cmim_block(self, x1, x2, name=None):
+    #     """Cross-Modal Interaction Module: 双向交叉注意力 + 残差 + 可学习融合"""
+    #     attn = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.ffn_units, name=f'{name}_attn')
+        
+    #     y1 = attn(query=x1, value=x2, key=x2)
+    #     y1 = Dropout(0.1)(y1)
+    #     y1 = Add(name=f'{name}_add1')([x1, y1])
+    #     y1 = LayerNormalization(name=f'{name}_ln1')(y1)
+
+    #     y2 = attn(query=x2, value=x1, key=x1)
+    #     y2 = Dropout(0.1)(y2)
+    #     y2 = Add(name=f'{name}_add2')([x2, y2])
+    #     y2 = LayerNormalization(name=f'{name}_ln2')(y2)
+
+    #     # 可学习融合
+    #     merged = Concatenate(name=f'{name}_concat')([y1, y2])
+    #     merged = Dense(self.ffn_units, activation='relu', name=f'{name}_proj')(merged)
+    #     return merged
 
     def positional_encoding(self, x):
         """正余弦位置编码"""
@@ -5880,6 +5949,32 @@ class Transformer_depth(ActionPredict):
             return inputs + pos_encoding_adjusted
 
         return Lambda(compute_pos_encoding, name="positional_encoding")(x)
+    
+    # def get_positional_encoding(seq_len, d_model):
+    #     pos = tf.range(seq_len, dtype=tf.float32)[:, tf.newaxis]  # (seq_len, 1)
+    #     i = tf.range(d_model, dtype=tf.float32)[tf.newaxis, :]    # (1, d_model)
+
+    #     angle_rates = 1 / tf.pow(10000.0, (2 * (i // 2)) / tf.cast(d_model, tf.float32))
+    #     angle_rads = pos * angle_rates  # (seq_len, d_model)
+
+    #     sines = tf.sin(angle_rads[:, 0::2])
+    #     cosines = tf.cos(angle_rads[:, 1::2])
+
+    #     pos_encoding = tf.concat([sines, cosines], axis=-1)
+    #     return pos_encoding  # shape: (seq_len, d_model)
+
+    # def add_positional_encoding(x):
+    #     seq_len = tf.shape(x)[1]
+    #     d_model = tf.shape(x)[2]
+
+    #     # 兼容动态图：用 Lambda 包装，调用时实际执行
+    #     def encode(inputs):
+    #         pe = get_positional_encoding(seq_len=inputs.shape[1], d_model=inputs.shape[2])  # (seq_len, d_model)
+    #         pe = tf.expand_dims(pe, axis=0)  # (1, seq_len, d_model)
+    #         pe = tf.tile(pe, [tf.shape(inputs)[0], 1, 1])  # (batch, seq_len, d_model)
+    #         return inputs + pe
+
+    #     return Lambda(encode, name="add_positional_encoding")(x)
 
     def mhsa_block(self, x, name=None):
         """Multi-Head Self Attention + 残差"""

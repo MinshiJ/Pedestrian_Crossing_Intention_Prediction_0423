@@ -20,3 +20,4 @@ data/features/jaad/mask_cnn_vgg_raw
 data/models/
 model_imgs/
 train_log/
+checkpoints/
