@@ -41,14 +41,14 @@ train_opts:
     #   'patience': 15,
     #   'verbose': 1
     # },
-     'plateau': {
-      'monitor': 'val_loss',
-      'factor': 0.2,
-      'patience': 5,
-      'cooldown': 1,
-      'min_lr': 1e-7,
-      'verbose': 1
-    },
+    #  'plateau': {
+    #   'monitor': 'val_loss',
+    #   'factor': 0.2,
+    #   'patience': 5,
+    #   'cooldown': 1,
+    #   'min_lr': 1e-7,
+    #   'verbose': 1
+    # },
     #   'checkpoint': {
     #   'monitor': 'val_loss',
     #   'save_best_only': True,
