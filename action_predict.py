@@ -4,6 +4,7 @@ import yaml
 import wget
 import cv2
 from utils import *
+from custom_callbacks import EpochSaveCallback, DetailedLoggingCallback, MetricsVisualizationCallback
 from base_models import AlexNet, C3DNet, convert_to_fcn, C3DNet2
 from base_models import I3DNet
 from tensorflow.keras.layers import Input, Concatenate, Dense
@@ -21,6 +22,7 @@ from tensorflow.keras.metrics import Precision, Recall
 from tensorflow.keras import regularizers
 from tensorflow.keras import backend as K
 from tensorflow.keras.utils import Sequence
+from tensorflow.keras.utils import register_keras_serializable
 from tensorflow.keras.activations import gelu
 
 try:
@@ -101,9 +103,9 @@ class ActionPredict(object):
             A list of data samples extracted from raw data
             Positive and negative data counts
         """
-        print('\n#####################################')
-        print('Generating raw data')
-        print('#####################################')
+        # print('\n#####################################')
+        # print('Generating raw data')
+        # print('#####################################')
         d = {'center': data_raw['center'].copy(),
              'box': data_raw['bbox'].copy(),
              'ped_id': data_raw['pid'].copy(),
@@ -119,8 +121,8 @@ class ActionPredict(object):
             d['speed'] = data_raw['obd_speed'].copy()
         except KeyError:
             d['speed'] = data_raw['vehicle_act'].copy()
-            print('Jaad dataset does not have speed information')
-            print('Vehicle actions are used instead')
+            # print('Jaad dataset does not have speed information')
+            # print('Vehicle actions are used instead')
         if balance:
             self.balance_data_samples(d, data_raw['image_dimension'][0])
         d['box_org'] = d['box'].copy()
@@ -166,7 +168,7 @@ class ActionPredict(object):
         d['crossing'] = np.array(d['crossing'])[:, 0, :]
         pos_count = np.count_nonzero(d['crossing'])
         neg_count = len(d['crossing']) - pos_count
-        print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
+        # print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
 
         return d, neg_count, pos_count
 
@@ -493,9 +495,14 @@ class ActionPredict(object):
         class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
         optimizer = self.get_optimizer(optimizer)(lr=lr)
         train_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+        
+        # 使用正则化损失函数编译模型
+        # train_model.compile(optimizer=optimizer, loss=RegularizedLoss(lambda_=1e-4), metrics=['accuracy'])
+
+        # === 原始回调设置（注释掉） ===
         ## reivse fit
         # callbacks = self.get_callbacks(learning_scheduler, model_path)
-        callbacks = []
+        # callbacks = []
         # reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
         #     # monitor='val_loss',
         #     monitor='loss',
@@ -506,15 +513,64 @@ class ActionPredict(object):
         #     min_lr=1e-7,
         #     verbose=1)
         # callbacks.append(reduce_lr)
-
-        ckpt = tf.keras.callbacks.ModelCheckpoint(
+        # ckpt = tf.keras.callbacks.ModelCheckpoint(
+        #     filepath='checkpoints/best.ckpt',
+        #     monitor='val_loss',
+        #     mode='min',
+        #     save_best_only=True,
+        #     save_weights_only=True,
+        #     verbose=1)
+        # callbacks.append(ckpt)
+        
+        # === 新的回调设置：保存每个epoch的训练结果 ===
+        callbacks = []
+        
+        # 1. 使用自定义回调保存每个epoch和最佳模型
+        epoch_save_callback = EpochSaveCallback(
+            save_dir=os.path.dirname(model_path),  # 保存在模型目录下
+            save_best_k=5,  # 保存最好的5个模型
+            monitor='val_loss',
+            mode='min',
+            save_weights_only=False,  # 保存完整模型
+            save_format='h5'
+        )
+        callbacks.append(epoch_save_callback)
+        
+        # 2. 详细日志记录
+        log_callback = DetailedLoggingCallback(
+            log_dir=os.path.dirname(model_path),
+            log_frequency=1  # 每个epoch都记录
+        )
+        callbacks.append(log_callback)
+        
+        # 3. 指标可视化（可选）
+        # viz_callback = MetricsVisualizationCallback(
+        #     save_dir=os.path.join(os.path.dirname(model_path), 'plots'),
+        #     plot_frequency=5  # 每5个epoch绘制一次
+        # )
+        # callbacks.append(viz_callback)
+        
+        # 4. 传统的最佳权重保存（备份）
+        best_ckpt = tf.keras.callbacks.ModelCheckpoint(
             filepath='checkpoints/best.ckpt',
             monitor='val_loss',
             mode='min',
             save_best_only=True,
-            save_weights_only=True,
+            save_weights_only=False,
             verbose=1)
-        callbacks.append(ckpt)
+        callbacks.append(best_ckpt)
+        
+        # 5. 学习率调度器（可选）
+        if model_opts.get('use_lr_scheduler', False):
+            reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                mode='min',
+                factor=0.2,
+                patience=5,
+                cooldown=1,
+                min_lr=1e-7,
+                verbose=1)
+            callbacks.append(reduce_lr)
         
         # data_val = data_val.batch(batch_size)
         history = train_model.fit(x=data_train['data'][0],
@@ -638,6 +694,7 @@ class ActionPredict(object):
                 yaml.dump(results, fid)
         return acc, auc, f1, precision, recall
 
+
     def get_model(self, data_params):
         """
         Generates a model
@@ -654,7 +711,7 @@ def action_prediction(model_name):
         if cls.__name__ == model_name:
             return cls
     raise Exception('Model {} is not valid!'.format(model_name))
-
+    
 
 class DataGenerator(Sequence):
 
@@ -780,91 +837,6 @@ class CLSTokenLayer(tf.keras.layers.Layer):
         })
         return config
 
-@tf.keras.utils.register_keras_serializable()
-class LearnablePosEncoding(tf.keras.layers.Layer):
-    def __init__(self, max_len, d_model, **kwargs):
-        super().__init__(**kwargs)
-        self.max_len  = max_len
-        self.d_model  = d_model
-        # (max_len, d_model) 可学习矩阵
-        self.pos_emb = self.add_weight(
-            shape=(max_len, d_model),
-            initializer="random_normal",
-            trainable=True,
-            name="pos_embedding"
-        )
-
-    def call(self, inputs):
-        # inputs: (batch, seq_len, d_model)
-        seq_len = tf.shape(inputs)[1]
-        return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
-
-    # ✨ 关键补丁：序列化配置 ✨
-    def get_config(self):
-        # 先拿父类的基本配置
-        config = super().get_config().copy()
-        # 把自定义参数写进去
-        config.update({
-            "max_len": self.max_len,
-            "d_model": self.d_model,
-        })
-        return config
-    
-@tf.keras.utils.register_keras_serializable()
-class CMIMBlock(tf.keras.layers.Layer):
-    def __init__(self, num_heads, num_hidden_units, dropout=0.1, name=None, **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.num_heads = num_heads
-        self.num_hidden_units = num_hidden_units
-        self.dropout_rate = dropout
-
-        # 注意力层
-        self.attn1 = MultiHeadAttention(num_heads=num_heads, key_dim=num_hidden_units, name=f'{name}_attn1')
-        self.attn2 = MultiHeadAttention(num_heads=num_heads, key_dim=num_hidden_units, name=f'{name}_attn2')
-
-        # Dropout + LayerNorm
-        self.dropout = Dropout(dropout)
-        self.ln1 = LayerNormalization(name=f'{name}_ln1')
-        self.ln2 = LayerNormalization(name=f'{name}_ln2')
-
-        # 可学习缩放因子
-        self.gamma1 = self.add_weight(
-            name=f'{name}_gamma1',
-            shape=(1,),
-            initializer=tf.constant_initializer(0.1),
-            trainable=True
-        )
-        self.gamma2 = self.add_weight(
-            name=f'{name}_gamma2',
-            shape=(1,),
-            initializer=tf.constant_initializer(0.1),
-            trainable=True
-        )
-
-    def call(self, x1, x2, training=False):
-        # x2 attends to x1
-        y1_attn = self.attn1(query=x2, value=x1, key=x1)
-        y1_attn = self.dropout(y1_attn, training=training)
-        y1 = x1 + self.gamma1 * y1_attn
-        y1 = self.ln1(y1)
-
-        # x1 attends to x2
-        y2_attn = self.attn2(query=x1, value=x2, key=x2)
-        y2_attn = self.dropout(y2_attn, training=training)
-        y2 = x2 + self.gamma2 * y2_attn
-        y2 = self.ln2(y2)
-
-        return y1 + y2
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "num_heads": self.num_heads,
-            "num_hidden_units": self.num_hidden_units,
-            "dropout": self.dropout_rate,
-            "name": self.name,
-        })
-        return config
 
 class Transformer_depth(ActionPredict):
     """
@@ -872,10 +844,11 @@ class Transformer_depth(ActionPredict):
     输入：Bounding Box, Depth, Vehicle Speed, Pedestrian Speed（均为序列）
     输出：Intention（二分类），E-Traj（下一帧xy坐标）
     """
-    def __init__(self, num_heads=4, num_hidden_units=256, dropout=0.1, **kwargs):
+    def __init__(self, num_heads=8, num_hidden_units=256, dropout=0.1, **kwargs):
         super().__init__(**kwargs)
         self.num_heads = num_heads
-        self.num_hidden_units = num_hidden_units
+        # 名词改
+        self.num_hidden_units = num_hidden_units 
         self.dropout = dropout
         self.dataset = kwargs['dataset']
         self.sample = kwargs['sample_type']
@@ -902,9 +875,9 @@ class Transformer_depth(ActionPredict):
         """Transformer-style FFN block: Dense + GELU + Dropout + Residual + LayerNorm"""
         
         # FFN sub-layer
-        x = Dense(2 * self.num_hidden_units, activation=gelu, name=f'{name}_ffn1')(input_tensor)
+        # 删x = Dense(2 * self.num_hidden_units, activation=gelu, name=f'{name}_ffn1')(input_tensor)
         # x = Dense(2 * self.num_hidden_units, activation='tanh', name=f'{name}_ffn1')(input_tensor)
-        x = Dense(self.num_hidden_units, activation=None, name=f'{name}_ffn2')(x)
+        x = Dense(self.num_hidden_units, activation=None, name=f'{name}_ffn2')(input_tensor)
         
         # Layer normalization
         x = LayerNormalization(name=f'{name}_ln')(x)
@@ -922,15 +895,16 @@ class Transformer_depth(ActionPredict):
     #     x = Add(name=f'{name}_fem_add')([shortcut, x])
     #     return x
 
-    def fem_block(self, x, name=None):
+    def fem_block(self, x, dropout = 0.1, name=None):
         """Feature Enhancement Module: PreNorm -> FFN (GELU+Linear) -> Residual Add"""
         x = LayerNormalization(name=f'{name}_fem_norm')(x)
         shortcut = x
+        # 进行一次256 512 256
         x = Dense(2 * self.num_hidden_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
         x = Dense(self.num_hidden_units, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
-        x = Dense(2 * self.num_hidden_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn2_dense1')(x)
-        x = Dense(self.num_hidden_units, activation=None, name=f'{name}_fem_ffn2_dense2')(x)
-        x = Dropout(self.dropout, name=f'{name}_fem_drop')(x)
+        # x = Dense(2 * self.num_hidden_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn2_dense1')(x)
+        # x = Dense(self.num_hidden_units, activation=None, name=f'{name}_fem_ffn2_dense2')(x)
+        x = Dropout(dropout, name=f'{name}_fem_drop')(x)
         x = Add(name=f'{name}_fem_add')([shortcut, x])
         return x
 
@@ -944,15 +918,35 @@ class Transformer_depth(ActionPredict):
     #     y2 = Add(name=f'{name}_add2')([x2, y2])
     #     return y1 + y2
 
-    def cmim_block(self, x1, x2, name=None):
+    def cmim_block(self, x1, x2, dropout = 0.1, name=None):
         """Cross-Modal Interaction Module: 双向交叉注意力 + 残差"""
-        attn1 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn1')
+        d_model = self.num_hidden_units
+        num_heads = self.num_heads
+        attn1 = MultiHeadAttention(
+            num_heads=num_heads,
+            key_dim=d_model // num_heads,
+            value_dim=d_model // num_heads,
+            output_shape=d_model,
+            dropout=dropout,
+            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            name=f'{name}_attn1'
+        )
+        attn2 = MultiHeadAttention(
+            num_heads=num_heads,
+            key_dim=d_model // num_heads,
+            value_dim=d_model // num_heads,
+            output_shape=d_model,
+            dropout=dropout,
+            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            name=f'{name}_attn2'
+        )
+        # attn1 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn1')
         y1 = attn1(query=x2, value=x1, key=x1)
         y1 = Dropout(self.dropout)(y1)
         y1 = Add(name=f'{name}_add1')([x1, y1])
         y1 = LayerNormalization(name=f'{name}_ln1')(y1)
 
-        attn2 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn2')
+        # attn2 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn2')
         y2 = attn2(query=x1, value=x2, key=x2)
         y2 = Dropout(self.dropout)(y2)
         y2 = Add(name=f'{name}_add2')([x2, y2])
@@ -1000,13 +994,35 @@ class Transformer_depth(ActionPredict):
 
         return Lambda(compute_pos_encoding, name="positional_encoding")(x)
     
-    def mhsa_block(self, x, name=None):
-        """Multi-Head Self Attention + 残差"""
-        x = LayerNormalization(name=f'{name}_mhsa_norm')(x)
-        shortcut = x
-        x = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_mhsa')(x, x)
-        x = Dropout(self.dropout, name=f'{name}_mhsa_drop')(x)
-        return x + shortcut
+    # def mhsa_block(self, x, name=None):
+    #     """Multi-Head Self Attention + 残差"""
+    #     x = LayerNormalization(name=f'{name}_mhsa_norm')(x)
+    #     shortcut = x
+    #     x = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_mhsa')(x, x)
+    #     x = Dropout(self.dropout, name=f'{name}_mhsa_drop')(x)
+    #     return x + shortcut
+
+    def mhsa_block(self, x, dropout = 0.1, name=None, attention_mask=None):
+        """Pre-LN Multi-Head Self-Attention + 残差"""
+        d_model = self.num_hidden_units
+        x_norm = LayerNormalization(name=f'{name}_mhsa_norm')(x)
+
+        attn = MultiHeadAttention(
+            num_heads=self.num_heads,
+            key_dim=d_model // self.num_heads,     # 每头维度
+            value_dim=d_model // self.num_heads,   # 建议显式给出
+            output_shape=d_model,                  # 输出回 d_model，方便残差相加
+            dropout=dropout,
+            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            name=f'{name}_mhsa'
+        )
+
+        attn_out = attn(
+            query=x_norm, value=x_norm, key=x_norm,
+            # attention_mask=attention_mask
+        )
+        x = Add(name=f'{name}_mhsa_res')([x, Dropout(dropout, name=f'{name}_mhsa_drop')(attn_out)])
+        return x
 
     def get_model(self, data_params):
         bbox_in = Input(shape=(None, 4), name='bbox')
@@ -1022,21 +1038,21 @@ class Transformer_depth(ActionPredict):
         vehspd = self.embedding_norm_block(vehspd_in, name='vehspd')
         pedspd = self.embedding_norm_block(pedspd_in, name='pedspd')
 
-        # x = self.cmim_block(vehspd, pedspd, name='cmim_vehspd_pedspd')
-        # x = self.fem_block(x, name='fem_vehspd_pedspd')
-        # x = self.cmim_block(depth, x, name='cmim_depth_vehspd_pedspd')
-        # x = self.fem_block(x, name='fem_depth_vehspd_pedspd')
-        # x = self.cmim_block(bbox, x, name='cmim_all')
-        # x = self.fem_block(x, name='fem_all')
-
-        x = CMIMBlock(4, 128, 0.1, name='cmim_vehspd_pedspd')(vehspd, pedspd)
+        x = self.cmim_block(vehspd, pedspd, name='cmim_vehspd_pedspd')
         x = self.fem_block(x, name='fem_vehspd_pedspd')
-
-        x = CMIMBlock(4, 128, 0.1, name='cmim_depth_vehspd_pedspd')(depth, x)
+        x = self.cmim_block(depth, x, name='cmim_depth_vehspd_pedspd')
         x = self.fem_block(x, name='fem_depth_vehspd_pedspd')
-
-        x = CMIMBlock(4, 128, 0.1, name='cmim_all')(bbox, x)
+        x = self.cmim_block(bbox, x, name='cmim_all')
         x = self.fem_block(x, name='fem_all')
+
+        # x = CMIMBlock(4, 128, 0.1, name='cmim_vehspd_pedspd')(vehspd, pedspd)
+        # x = self.fem_block(x, name='fem_vehspd_pedspd')
+
+        # x = CMIMBlock(4, 128, 0.1, name='cmim_depth_vehspd_pedspd')(depth, x)
+        # x = self.fem_block(x, name='fem_depth_vehspd_pedspd')
+
+        # x = CMIMBlock(4, 128, 0.1, name='cmim_all')(bbox, x)
+        # x = self.fem_block(x, name='fem_all')
 
         # # cls_token = tf.zeros_like(x[:, :1, :])
         cls_token = CLSTokenLayer(self.num_hidden_units)(x)
@@ -1046,10 +1062,10 @@ class Transformer_depth(ActionPredict):
         x = self.positional_encoding(x)
         # x = LearnablePosEncoding(max_len=128, d_model=self.num_hidden_units)(x)
 
-        x = self.mhsa_block(x, name='mhsa_1')
-        x = self.fem_block(x, name='fem_after_mhsa_1')
-        x = self.mhsa_block(x, name='mhsa_2')
-        x = self.fem_block(x, name='fem_after_mhsa_2')
+        x = self.mhsa_block(x, dropout = 0.3, name='mhsa_1')
+        x = self.fem_block(x, dropout = 0.3, name='fem_after_mhsa_1')
+        x = self.mhsa_block(x, dropout = 0.1, name='mhsa_2')
+        x = self.fem_block(x, dropout = 0.1 , name='fem_after_mhsa_2')
         # x = self.mhsa_block(x, name='mhsa_3')
         # x = self.fem_block(x, name='fem_after_mhsa_3')
         # x = self.mhsa_block(x, name='mhsa_4')
@@ -1119,9 +1135,9 @@ class Transformer_depth(ActionPredict):
                 'count': {'neg_count': neg_count, 'pos_count': pos_count}}
 
     def get_data_sequence(self, data_type, data_raw, opts):
-        print('\n#####################################')
-        print('Generating raw data')
-        print('#####################################')
+        # print('\n#####################################')
+        # print('Generating raw data')
+        # print('#####################################')
 ##########################################################################################
 # 处理JAAD数据集
         if opts['dataset'] == 'jaad':
@@ -1140,8 +1156,8 @@ class Transformer_depth(ActionPredict):
                 d['speed'] = data_raw['obd_speed'].copy()
             except KeyError:
                 d['speed'] = data_raw['vehicle_act'].copy()
-                print('Jaad dataset does not have speed information')
-                print('Vehicle actions are used instead')
+                # print('Jaad dataset does not have speed information')
+                # print('Vehicle actions are used instead')
             if balance:
                 self.balance_data_samples(d, data_raw['image_dimension'][0])
             # d['box_org'] = d['box'].copy()
@@ -1194,12 +1210,12 @@ class Transformer_depth(ActionPredict):
             
             # 检查缓存文件是否存在
             if os.path.exists(cache_path):
-                print(f"Loading depth data from cache: {cache_path}")
+                # print(f"Loading depth data from cache: {cache_path}")
                 with open(cache_path, 'rb') as f:
                     d['depth'] = pickle.load(f)
-                print(f"Loaded {len(d['depth'])} depth sequences from cache")
+                # print(f"Loaded {len(d['depth'])} depth sequences from cache")
             else:
-                print(f"Computing depth data and saving to cache: {cache_path}")
+                # print(f"Computing depth data and saving to cache: {cache_path}")
                 # 计算深度信息
                 d['depth'] = []
                 for idx, seq in enumerate(data_raw['bbox']):
@@ -1248,10 +1264,10 @@ class Transformer_depth(ActionPredict):
                         print(f"Processed depth for {idx + 1}/{len(data_raw['bbox'])} sequences")
 
                 # 保存到缓存
-                print(f"Saving depth data to cache: {cache_path}")
+                # print(f"Saving depth data to cache: {cache_path}")
                 with open(cache_path, 'wb') as f:
                     pickle.dump(d['depth'], f, pickle.HIGHEST_PROTOCOL)
-                print(f"Saved {len(d['depth'])} depth sequences to cache")        
+                # print(f"Saved {len(d['depth'])} depth sequences to cache")        
             
             if normalize:
                 for k in d.keys():
@@ -1270,7 +1286,7 @@ class Transformer_depth(ActionPredict):
             d['crossing'] = np.array(d['crossing'])[:, 0, :]
             pos_count = np.count_nonzero(d['crossing'])
             neg_count = len(d['crossing']) - pos_count
-            print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
+            # print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
 
 ##########################################################################################
 # 处理PIE数据集
