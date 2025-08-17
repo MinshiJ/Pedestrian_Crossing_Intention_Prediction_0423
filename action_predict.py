@@ -928,7 +928,7 @@ class Transformer_depth(ActionPredict):
             value_dim=d_model // num_heads,
             output_shape=d_model,
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.01),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_attn1'
         )
         attn2 = MultiHeadAttention(
@@ -937,7 +937,7 @@ class Transformer_depth(ActionPredict):
             value_dim=d_model // num_heads,
             output_shape=d_model,
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.01),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_attn2'
         )
         # attn1 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn1')
@@ -1013,7 +1013,7 @@ class Transformer_depth(ActionPredict):
             value_dim=d_model // self.num_heads,   # 建议显式给出
             output_shape=d_model,                  # 输出回 d_model，方便残差相加
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.01),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_mhsa'
         )
 
