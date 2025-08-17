@@ -1071,7 +1071,6 @@ class Transformer_depth(ActionPredict):
         # x = self.mhsa_block(x, name='mhsa_4')
         # x = self.fem_block(x, name='fem_after_mhsa_4')
 
-
         cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
         intention = Dense(1, activation='sigmoid', name='intention')(cls_out)
         # etraj = Dense(2, activation=None, name='etraj')(cls_out)
