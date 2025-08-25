@@ -36,8 +36,12 @@ def test_model(saved_files_path=None):
             imdb = JAAD(data_path='/home/minshi/Pedestrian_Crossing_Intention_Prediction/JAAD')
     else:
             raise ValueError("{} dataset is incorrect".format(model_opts['dataset']))
-
-    method_class = action_prediction(model_opts['model'])(**net_opts)
+    
+    method_class = action_prediction(model_opts['model'])(
+        dataset=model_opts['dataset'],
+        sample_type=data_opts['sample_type'],
+        **net_opts
+    )
     #beh_seq_train = imdb.generate_data_trajectory_sequence('train', **data_opts)
     #saved_files_path = method_class.train(beh_seq_train, **train_opts, model_opts=model_opts)
 

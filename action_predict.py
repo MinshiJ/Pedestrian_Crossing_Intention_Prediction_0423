@@ -844,115 +844,64 @@ class Transformer_depth(ActionPredict):
     输入：Bounding Box, Depth, Vehicle Speed, Pedestrian Speed（均为序列）
     输出：Intention（二分类），E-Traj（下一帧xy坐标）
     """
-    def __init__(self, num_heads=8, num_hidden_units=256, dropout=0.1, **kwargs):
+    def __init__(self, num_heads=8, d_model=256, dropout=0.1, **kwargs):
         super().__init__(**kwargs)
         self.num_heads = num_heads
-        # 名词改
-        self.num_hidden_units = num_hidden_units 
+        self.d_model = d_model 
         self.dropout = dropout
         self.dataset = kwargs['dataset']
         self.sample = kwargs['sample_type']
-
-
-    # def embedding_norm_block(self, input_tensor, name=None):
-    #     """Dense embedding + LayerNorm"""
-    #     # x = Dense(self.ffn_units, activation=None, name=f'{name}_emb')(input_tensor)
-    #     x = Dense(self.ffn_units, activation=gelu, name=f'{name}_emb2')(x)
-    #     x = LayerNormalization(name=f'{name}_ln')(x)
-    #     return x
-    
-    # # 典型 Transformer FFN Block
-    # def embedding_norm_block(self, input_tensor, name=None):
-    #     shortcut = input_tensor
-    #     x = Dense(4 * self.ffn_units, activation='gelu', name=f'{name}_ffn1')(input_tensor)
-    #     x = Dense(self.ffn_units, activation=None, name=f'{name}_ffn2')(x)
-    #     x = Dropout(self.dropout)(x)
-    #     x = Add(name=f'{name}_res')([shortcut, x])
-    #     x = LayerNormalization(name=f'{name}_ln')(x)
-    #     return x
 
     def embedding_norm_block(self, input_tensor, name=None):
         """Transformer-style FFN block: Dense + GELU + Dropout + Residual + LayerNorm"""
         
         # FFN sub-layer
-        # 删x = Dense(2 * self.num_hidden_units, activation=gelu, name=f'{name}_ffn1')(input_tensor)
-        # x = Dense(2 * self.num_hidden_units, activation='tanh', name=f'{name}_ffn1')(input_tensor)
-        x = Dense(self.num_hidden_units, activation=None, name=f'{name}_ffn2')(input_tensor)
-        
+        x = Dense(self.d_model, activation=None, name=f'{name}_ffn2')(input_tensor)
         # Layer normalization
         x = LayerNormalization(name=f'{name}_ln')(x)
-        
         return x
-
-    # def fem_block(self, x, name=None):
-    #     """Feature Enhancement Module: Norm -> 2层FFN -> Dropout&Add (残差)"""
-    #     shortcut = x
-    #     x = LayerNormalization(name=f'{name}_fem_norm')(x)
-    #     x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn1')(x)
-    #     x = Dropout(self.dropout, name=f'{name}_fem_drop1')(x)
-    #     x = Dense(self.ffn_units, activation='relu', name=f'{name}_fem_ffn2')(x)
-    #     x = Dropout(self.dropout, name=f'{name}_fem_drop2')(x)
-    #     x = Add(name=f'{name}_fem_add')([shortcut, x])
-    #     return x
-
-    def fem_block(self, x, dropout = 0.1, name=None):
-        """Feature Enhancement Module: PreNorm -> FFN (GELU+Linear) -> Residual Add"""
-        x = LayerNormalization(name=f'{name}_fem_norm')(x)
-        shortcut = x
-        # 进行一次256 512 256
-        x = Dense(2 * self.num_hidden_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
-        x = Dense(self.num_hidden_units, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
-        # x = Dense(2 * self.num_hidden_units, activation=tf.nn.gelu, name=f'{name}_fem_ffn2_dense1')(x)
-        # x = Dense(self.num_hidden_units, activation=None, name=f'{name}_fem_ffn2_dense2')(x)
-        x = Dropout(dropout, name=f'{name}_fem_drop')(x)
-        x = Add(name=f'{name}_fem_add')([shortcut, x])
-        return x
-
-    # def cmim_block(self, x1, x2, name=None):
-    #     """Cross-Modal Interaction Module: 双分支多头注意力+残差"""
-    #     attn1 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.ffn_units, name=f'{name}_attn1')
-    #     attn2 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.ffn_units, name=f'{name}_attn2')
-    #     y1 = attn1(query=x1, value=x2, key=x2)
-    #     y2 = attn2(query=x2, value=x1, key=x1)
-    #     y1 = Add(name=f'{name}_add1')([x1, y1])
-    #     y2 = Add(name=f'{name}_add2')([x2, y2])
-    #     return y1 + y2
 
     def cmim_block(self, x1, x2, dropout = 0.1, name=None):
         """Cross-Modal Interaction Module: 双向交叉注意力 + 残差"""
-        d_model = self.num_hidden_units
-        num_heads = self.num_heads
         attn1 = MultiHeadAttention(
-            num_heads=num_heads,
-            key_dim=d_model // num_heads,
-            value_dim=d_model // num_heads,
-            output_shape=d_model,
+            num_heads=self.num_heads,
+            key_dim=self.d_model // self.num_heads,
+            value_dim=self.d_model // self.num_heads,
+            output_shape=self.d_model,
             dropout=dropout,
             kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_attn1'
         )
         attn2 = MultiHeadAttention(
-            num_heads=num_heads,
-            key_dim=d_model // num_heads,
-            value_dim=d_model // num_heads,
-            output_shape=d_model,
+            num_heads=self.num_heads,
+            key_dim=self.d_model // self.num_heads,
+            value_dim=self.d_model // self.num_heads,
+            output_shape=self.d_model,
             dropout=dropout,
             kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_attn2'
         )
-        # attn1 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn1')
         y1 = attn1(query=x2, value=x1, key=x1)
-        y1 = Dropout(self.dropout)(y1)
+        y1 = Dropout(dropout)(y1)
         y1 = Add(name=f'{name}_add1')([x1, y1])
         y1 = LayerNormalization(name=f'{name}_ln1')(y1)
 
-        # attn2 = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_attn2')
         y2 = attn2(query=x1, value=x2, key=x2)
-        y2 = Dropout(self.dropout)(y2)
+        y2 = Dropout(dropout)(y2)
         y2 = Add(name=f'{name}_add2')([x2, y2])
         y2 = LayerNormalization(name=f'{name}_ln2')(y2)
 
         return y1 + y2
+    
+    def fem_block(self, x, dropout = 0.1, name=None):
+        """Feature Enhancement Module: PreNorm -> FFN (GELU+Linear) -> Residual Add"""
+        x = LayerNormalization(name=f'{name}_fem_norm')(x)
+        shortcut = x
+        x = Dense(2 * self.d_model, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
+        x = Dense(self.d_model, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
+        x = Dropout(dropout, name=f'{name}_fem_drop')(x)
+        x = Add(name=f'{name}_fem_add')([shortcut, x])
+        return x
 
     def positional_encoding(self, x):
         """正余弦位置编码"""
@@ -993,25 +942,16 @@ class Transformer_depth(ActionPredict):
             return inputs + pos_encoding_adjusted
 
         return Lambda(compute_pos_encoding, name="positional_encoding")(x)
-    
-    # def mhsa_block(self, x, name=None):
-    #     """Multi-Head Self Attention + 残差"""
-    #     x = LayerNormalization(name=f'{name}_mhsa_norm')(x)
-    #     shortcut = x
-    #     x = MultiHeadAttention(num_heads=self.num_heads, key_dim=self.num_hidden_units, name=f'{name}_mhsa')(x, x)
-    #     x = Dropout(self.dropout, name=f'{name}_mhsa_drop')(x)
-    #     return x + shortcut
 
     def mhsa_block(self, x, dropout = 0.1, name=None, attention_mask=None):
         """Pre-LN Multi-Head Self-Attention + 残差"""
-        d_model = self.num_hidden_units
         x_norm = LayerNormalization(name=f'{name}_mhsa_norm')(x)
 
         attn = MultiHeadAttention(
             num_heads=self.num_heads,
-            key_dim=d_model // self.num_heads,     # 每头维度
-            value_dim=d_model // self.num_heads,   # 建议显式给出
-            output_shape=d_model,                  # 输出回 d_model，方便残差相加
+            key_dim=self.d_model // self.num_heads,     # 每头维度
+            value_dim=self.d_model // self.num_heads,   # 建议显式给出
+            output_shape=self.d_model,                  # 输出回 d_model，方便残差相加
             dropout=dropout,
             kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_mhsa'
@@ -1021,6 +961,7 @@ class Transformer_depth(ActionPredict):
             query=x_norm, value=x_norm, key=x_norm,
             # attention_mask=attention_mask
         )
+        x = Dropout(dropout, name=f'{name}_mhsa_drop')(x)
         x = Add(name=f'{name}_mhsa_res')([x, Dropout(dropout, name=f'{name}_mhsa_drop')(attn_out)])
         return x
 
@@ -1045,37 +986,20 @@ class Transformer_depth(ActionPredict):
         x = self.cmim_block(bbox, x, name='cmim_all')
         x = self.fem_block(x, name='fem_all')
 
-        # x = CMIMBlock(4, 128, 0.1, name='cmim_vehspd_pedspd')(vehspd, pedspd)
-        # x = self.fem_block(x, name='fem_vehspd_pedspd')
-
-        # x = CMIMBlock(4, 128, 0.1, name='cmim_depth_vehspd_pedspd')(depth, x)
-        # x = self.fem_block(x, name='fem_depth_vehspd_pedspd')
-
-        # x = CMIMBlock(4, 128, 0.1, name='cmim_all')(bbox, x)
-        # x = self.fem_block(x, name='fem_all')
-
-        # # cls_token = tf.zeros_like(x[:, :1, :])
-        cls_token = CLSTokenLayer(self.num_hidden_units)(x)
+        cls_token = CLSTokenLayer(self.d_model)(x)
         x = Concatenate(axis=1, name='add_cls')([cls_token, x])
 
         # Add positional encoding
         x = self.positional_encoding(x)
-        # x = LearnablePosEncoding(max_len=128, d_model=self.num_hidden_units)(x)
 
         x = self.mhsa_block(x, dropout = 0.3, name='mhsa_1')
         x = self.fem_block(x, dropout = 0.3, name='fem_after_mhsa_1')
         x = self.mhsa_block(x, dropout = 0.3, name='mhsa_2')
         x = self.fem_block(x, dropout = 0.3 , name='fem_after_mhsa_2')
-        # x = self.mhsa_block(x, name='mhsa_3')
-        # x = self.fem_block(x, name='fem_after_mhsa_3')
-        # x = self.mhsa_block(x, name='mhsa_4')
-        # x = self.fem_block(x, name='fem_after_mhsa_4')
 
         cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
         intention = Dense(1, activation='sigmoid', name='intention')(cls_out)
-        # etraj = Dense(2, activation=None, name='etraj')(cls_out)
 
-        # model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in], outputs=[intention, etraj], name='Transformer_depth')
         model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in], outputs=intention, name='Transformer_depth')
         plot_model(model, to_file='model_imgs/Transformer_depth.png')
         return model
