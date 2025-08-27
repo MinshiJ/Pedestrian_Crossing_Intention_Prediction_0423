@@ -14,35 +14,24 @@ from datetime import datetime
 
 class EpochSaveCallback(tf.keras.callbacks.Callback):
     """
-    自定义回调函数：保存每个epoch的模型和训练信息
+    自定义回调函数：保存每个epoch的模型
     """
     
-    def __init__(self, save_dir, save_best_k=5, monitor='val_loss', mode='min', 
-                 save_weights_only=False, save_format='h5'):
+    def __init__(self, save_dir, save_format='h5', save_weights_only=False):
         """
         Args:
             save_dir: 保存目录
-            save_best_k: 保存最好的k个模型
-            monitor: 监控的指标
-            mode: 'min' 或 'max'
-            save_weights_only: 是否只保存权重
             save_format: 保存格式 'h5' 或 'tf'
+            save_weights_only: 是否只保存权重
         """
         super().__init__()
         self.save_dir = save_dir
-        self.save_best_k = save_best_k
-        self.monitor = monitor
-        self.mode = mode
-        self.save_weights_only = save_weights_only
         self.save_format = save_format
+        self.save_weights_only = save_weights_only
         
         # 创建保存目录
         os.makedirs(save_dir, exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'epochs'), exist_ok=True)
-        os.makedirs(os.path.join(save_dir, 'best_models'), exist_ok=True)
-        
-        # 跟踪最佳模型
-        self.best_models = []  # [(score, epoch, filepath), ...]
         
         # 训练历史记录
         self.epoch_history = []
@@ -50,11 +39,6 @@ class EpochSaveCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         """每个epoch结束时调用"""
         logs = logs or {}
-        current_score = logs.get(self.monitor)
-        
-        if current_score is None:
-            print(f"Warning: {self.monitor} not found in logs")
-            return
         
         # 保存当前epoch信息
         epoch_info = {
@@ -64,7 +48,7 @@ class EpochSaveCallback(tf.keras.callbacks.Callback):
         }
         self.epoch_history.append(epoch_info)
         
-        # 1. 保存每个epoch的模型
+        # 保存每个epoch的模型
         epoch_filename = f"epoch_{epoch+1:03d}_loss_{logs.get('val_loss', 0):.4f}_acc_{logs.get('val_accuracy', 0):.4f}"
         if self.save_format == 'h5':
             epoch_filepath = os.path.join(self.save_dir, 'epochs', f"{epoch_filename}.h5")
@@ -76,133 +60,25 @@ class EpochSaveCallback(tf.keras.callbacks.Callback):
             epoch_filepath = os.path.join(self.save_dir, 'epochs', epoch_filename)
             self.model.save(epoch_filepath, save_format='tf')
         
-        # print(f"💾 Saved epoch model: {os.path.basename(epoch_filepath)}")
-        
-        # 2. 管理最佳模型
-        self._manage_best_models(current_score, epoch + 1, epoch_filepath)
-        
-        # 3. 保存训练历史
+        # 保存训练历史
         self._save_training_history()
         
-        # 4. 打印epoch摘要
-        self._print_epoch_summary(epoch + 1, logs)
-    
-    def _manage_best_models(self, current_score, epoch, epoch_filepath):
-        """管理最佳模型保存"""
-        # 判断是否比现有的最佳模型好
-        is_better = self._is_better(current_score)
-        
-        if len(self.best_models) < self.save_best_k:
-            # 如果还没有达到保存数量限制，直接添加
-            best_filename = f"best_{len(self.best_models)+1:02d}_epoch_{epoch:03d}_score_{current_score:.4f}"
-            if self.save_format == 'h5':
-                best_filepath = os.path.join(self.save_dir, 'best_models', f"{best_filename}.h5")
-                if self.save_weights_only:
-                    self.model.save_weights(best_filepath)
-                else:
-                    self.model.save(best_filepath)
-            else:
-                best_filepath = os.path.join(self.save_dir, 'best_models', best_filename)
-                self.model.save(best_filepath, save_format='tf')
-            
-            self.best_models.append((current_score, epoch, best_filepath))
-            # print(f"🌟 Added to best models ({len(self.best_models)}/{self.save_best_k}): score={current_score:.4f}")
-            
-        elif is_better:
-            # 找到最差的模型并替换
-            worst_idx = self._get_worst_model_idx()
-            worst_score, worst_epoch, worst_path = self.best_models[worst_idx]
-            
-            # 删除最差的模型文件
-            try:
-                if os.path.isdir(worst_path):
-                    import shutil
-                    shutil.rmtree(worst_path)
-                else:
-                    os.remove(worst_path)
-                print(f"🗑️  Removed worse model: epoch_{worst_epoch}, score={worst_score:.4f}")
-            except OSError as e:
-                print(f"Warning: Could not remove {worst_path}: {e}")
-            
-            # 保存新的最佳模型
-            best_filename = f"best_{worst_idx+1:02d}_epoch_{epoch:03d}_score_{current_score:.4f}"
-            if self.save_format == 'h5':
-                best_filepath = os.path.join(self.save_dir, 'best_models', f"{best_filename}.h5")
-                if self.save_weights_only:
-                    self.model.save_weights(best_filepath)
-                else:
-                    self.model.save(best_filepath)
-            else:
-                best_filepath = os.path.join(self.save_dir, 'best_models', best_filename)
-                self.model.save(best_filepath, save_format='tf')
-            
-            self.best_models[worst_idx] = (current_score, epoch, best_filepath)
-            print(f"🌟 Updated best models: score={current_score:.4f} (replaced score={worst_score:.4f})")
-    
-    def _is_better(self, current_score):
-        """判断当前分数是否更好"""
-        if not self.best_models:
-            return True
-        
-        worst_score = self._get_worst_score()
-        if self.mode == 'min':
-            return current_score < worst_score
-        else:
-            return current_score > worst_score
-    
-    def _get_worst_model_idx(self):
-        """获取最差模型的索引"""
-        if self.mode == 'min':
-            return max(range(len(self.best_models)), key=lambda i: self.best_models[i][0])
-        else:
-            return min(range(len(self.best_models)), key=lambda i: self.best_models[i][0])
-    
-    def _get_worst_score(self):
-        """获取最差分数"""
-        worst_idx = self._get_worst_model_idx()
-        return self.best_models[worst_idx][0]
-    
     def _save_training_history(self):
         """保存训练历史"""
-        # 保存为JSON格式（便于阅读）
-        json_path = os.path.join(self.save_dir, 'training_history.json')
-        with open(json_path, 'w') as f:
-            json.dump(self.epoch_history, f, indent=2)
+        # 保存为JSON格式
+        # json_path = os.path.join(self.save_dir, 'training_history.json')
+        # with open(json_path, 'w') as f:
+        #     json.dump(self.epoch_history, f, indent=2)
         
         # 保存为YAML格式
         yaml_path = os.path.join(self.save_dir, 'training_history.yaml')
         with open(yaml_path, 'w') as f:
             yaml.dump(self.epoch_history, f, default_flow_style=False)
-        
-        # 保存为pickle格式（便于程序读取）
-        pkl_path = os.path.join(self.save_dir, 'training_history.pkl')
-        with open(pkl_path, 'wb') as f:
-            pickle.dump(self.epoch_history, f)
-    
-    def _print_epoch_summary(self, epoch, logs):
-        """打印epoch摘要"""
-        # print(f"\n📊 Epoch {epoch} Summary:")
-        # print(f"   Loss: {logs.get('loss', 0):.4f} | Val Loss: {logs.get('val_loss', 0):.4f}")
-        # print(f"   Acc:  {logs.get('accuracy', 0):.4f} | Val Acc:  {logs.get('val_accuracy', 0):.4f}")
-        
-        if self.best_models:
-            best_scores = [score for score, _, _ in self.best_models]
-            best_score = min(best_scores) if self.mode == 'min' else max(best_scores)
-            # print(f"   Best {self.monitor}: {best_score:.4f}")
     
     def on_train_end(self, logs=None):
         """训练结束时调用"""
         print(f"\n🎯 Training completed!")
-        print(f"📁 Models saved in: {self.save_dir}")
-        print(f"🏆 Best {self.save_best_k} models saved in: {os.path.join(self.save_dir, 'best_models')}")
-        
-        # 打印最佳模型摘要
-        if self.best_models:
-            print(f"\n🌟 Best Models Summary:")
-            sorted_models = sorted(self.best_models, key=lambda x: x[0], reverse=(self.mode == 'max'))
-            for i, (score, epoch, filepath) in enumerate(sorted_models, 1):
-                filename = os.path.basename(filepath)
-                print(f"   {i}. Epoch {epoch}: {self.monitor}={score:.4f} -> {filename}")
+        print(f"📁 All epoch models saved in: {os.path.join(self.save_dir, 'epochs')}")
 
 
 class DetailedLoggingCallback(tf.keras.callbacks.Callback):

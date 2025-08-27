@@ -24,7 +24,7 @@ from tensorflow.keras import backend as K
 from tensorflow.keras.utils import Sequence
 from tensorflow.keras.utils import register_keras_serializable
 from tensorflow.keras.activations import gelu
-
+import tensorflow_addons as tfa
 try:
     from tensorflow.keras.layers import LayerNormalization, MultiHeadAttention
 except ImportError:
@@ -478,7 +478,7 @@ class ActionPredict(object):
         path_params = {'save_folder': os.path.join(self.__class__.__name__, model_folder_name),
                        'save_root_folder': 'data/models/',
                        'dataset': model_opts['dataset']}
-        model_path, _ = get_path(**path_params, file_name='model.h5')
+        model_path, save_path = get_path(**path_params, file_name='model.h5')
 
         # Read train data
         data_train = self.get_data('train', data_train, {**model_opts, 'batch_size': batch_size}) 
@@ -491,10 +491,32 @@ class ActionPredict(object):
         # Create model
         train_model = self.get_model(data_train['data_params'])
 
+        # plot_model(train_model, to_file=path_params['save_folder']+'/model_structure.png', show_shapes=True)
+        # Generate detailed model architecture diagram
+        plot_model(
+            train_model, 
+            to_file=os.path.join(save_path, 'model_structure.png'), 
+            show_layer_names=True,      # 显示层名称
+            rankdir='BT',               # 图的方向：TB(上下), LR(左右)
+            # expand_nested=True,         # 展开嵌套模型
+            # dpi=300,                    # 图像分辨率
+        )
         # Train the model
         class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
         optimizer = self.get_optimizer(optimizer)(lr=lr)
-        train_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+        # base_lr = 3e-4          # 可按你现在的学习率起步
+        # weight_decay = 1e-4     # 替代原先各层 L2(3e-4)
+
+        # optimizer = tfa.optimizers.AdamW(
+        #     learning_rate=base_lr,
+        #     weight_decay=weight_decay,
+        #     beta_1=0.9, beta_2=0.999, epsilon=1e-8
+        # )
+        train_model.compile(
+            loss='binary_crossentropy', 
+            optimizer=optimizer, 
+            metrics=['accuracy']
+            )
         
         # 使用正则化损失函数编译模型
         # train_model.compile(optimizer=optimizer, loss=RegularizedLoss(lambda_=1e-4), metrics=['accuracy'])
@@ -528,9 +550,6 @@ class ActionPredict(object):
         # 1. 使用自定义回调保存每个epoch和最佳模型
         epoch_save_callback = EpochSaveCallback(
             save_dir=os.path.dirname(model_path),  # 保存在模型目录下
-            save_best_k=5,  # 保存最好的5个模型
-            monitor='val_loss',
-            mode='min',
             save_weights_only=False,  # 保存完整模型
             save_format='h5'
         )
@@ -551,14 +570,14 @@ class ActionPredict(object):
         # callbacks.append(viz_callback)
         
         # 4. 传统的最佳权重保存（备份）
-        best_ckpt = tf.keras.callbacks.ModelCheckpoint(
-            filepath='checkpoints/best.ckpt',
-            monitor='val_loss',
-            mode='min',
-            save_best_only=True,
-            save_weights_only=False,
-            verbose=1)
-        callbacks.append(best_ckpt)
+        # best_ckpt = tf.keras.callbacks.ModelCheckpoint(
+        #     filepath='checkpoints/best.ckpt',
+        #     monitor='val_loss',
+        #     mode='min',
+        #     save_best_only=True,
+        #     save_weights_only=False,
+        #     verbose=1)
+        # callbacks.append(best_ckpt)
         
         # 5. 学习率调度器（可选）
         if model_opts.get('use_lr_scheduler', False):
@@ -582,7 +601,6 @@ class ActionPredict(object):
                                   verbose=1,
                                   callbacks=callbacks)
         # print(history.history.keys())
-
         if 'checkpoint' not in learning_scheduler:
             print('Train model is saved to {}'.format(model_path))
             train_model.save(model_path)
@@ -693,17 +711,6 @@ class ActionPredict(object):
             with open(save_results_path, 'w') as fid:
                 yaml.dump(results, fid)
         return acc, auc, f1, precision, recall
-
-
-    def get_model(self, data_params):
-        """
-        Generates a model
-        Args:
-            data_params: Data parameters to use for model generation
-        Returns:
-            A model
-        """
-        raise NotImplementedError("get_model should be implemented")
 
 
 def action_prediction(model_name):
@@ -825,6 +832,7 @@ class CLSTokenLayer(tf.keras.layers.Layer):
             name="cls_token"
         )
 
+    # @tf.autograph.experimental.do_not_convert
     def call(self, x):
         batch_size = tf.shape(x)[0]
         # 返回可广播的 token tensor
@@ -853,11 +861,9 @@ class Transformer_depth(ActionPredict):
         self.sample = kwargs['sample_type']
 
     def embedding_norm_block(self, input_tensor, name=None):
-        """Transformer-style FFN block: Dense + GELU + Dropout + Residual + LayerNorm"""
-        
-        # FFN sub-layer
-        x = Dense(self.d_model, activation=None, name=f'{name}_ffn2')(input_tensor)
-        # Layer normalization
+        """Dense + LayerNorm"""
+        # x = Dense(self.d_model, activation=None, kernel_regularizer=regularizers.L2(0.0003), name=f'{name}_embedding_norm')(input_tensor)
+        x = Dense(self.d_model, activation=None, name=f'{name}_embedding_norm')(input_tensor)
         x = LayerNormalization(name=f'{name}_ln')(x)
         return x
 
@@ -869,7 +875,7 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,
             output_shape=self.d_model,
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            # kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_attn1'
         )
         attn2 = MultiHeadAttention(
@@ -878,29 +884,33 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,
             output_shape=self.d_model,
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            # kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_attn2'
         )
         y1 = attn1(query=x2, value=x1, key=x1)
         y1 = Dropout(dropout)(y1)
         y1 = Add(name=f'{name}_add1')([x1, y1])
-        y1 = LayerNormalization(name=f'{name}_ln1')(y1)
+        # y1 = LayerNormalization(name=f'{name}_ln1')(y1)
 
         y2 = attn2(query=x1, value=x2, key=x2)
         y2 = Dropout(dropout)(y2)
         y2 = Add(name=f'{name}_add2')([x2, y2])
-        y2 = LayerNormalization(name=f'{name}_ln2')(y2)
+        # y2 = LayerNormalization(name=f'{name}_ln2')(y2)
 
-        return y1 + y2
+        return Add(name=f'{name}_fuse')([y1, y2])
     
     def fem_block(self, x, dropout = 0.1, name=None):
         """Feature Enhancement Module: PreNorm -> FFN (GELU+Linear) -> Residual Add"""
+        # x_in = x
         x = LayerNormalization(name=f'{name}_fem_norm')(x)
         shortcut = x
+        # x = Dense(2 * self.d_model, activation=tf.nn.gelu, kernel_regularizer=regularizers.L2(0.0003), name=f'{name}_fem_ffn1_dense1')(x)
+        # x = Dense(self.d_model, activation=None, kernel_regularizer=regularizers.L2(0.0003), name=f'{name}_fem_ffn1_dense2')(x)
         x = Dense(2 * self.d_model, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
         x = Dense(self.d_model, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
         x = Dropout(dropout, name=f'{name}_fem_drop')(x)
         x = Add(name=f'{name}_fem_add')([shortcut, x])
+        # x = Add(name=f'{name}_fem_add')([x_in, x])
         return x
 
     def positional_encoding(self, x):
@@ -945,15 +955,16 @@ class Transformer_depth(ActionPredict):
 
     def mhsa_block(self, x, dropout = 0.1, name=None, attention_mask=None):
         """Pre-LN Multi-Head Self-Attention + 残差"""
+        # x_in = x
         x_norm = LayerNormalization(name=f'{name}_mhsa_norm')(x)
 
         attn = MultiHeadAttention(
             num_heads=self.num_heads,
             key_dim=self.d_model // self.num_heads,     # 每头维度
-            value_dim=self.d_model // self.num_heads,   # 建议显式给出
+            value_dim=self.d_model // self.num_heads,   # 显式给出
             output_shape=self.d_model,                  # 输出回 d_model，方便残差相加
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            # kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
             name=f'{name}_mhsa'
         )
 
@@ -961,8 +972,9 @@ class Transformer_depth(ActionPredict):
             query=x_norm, value=x_norm, key=x_norm,
             # attention_mask=attention_mask
         )
-        x = Dropout(dropout, name=f'{name}_mhsa_drop')(x)
-        x = Add(name=f'{name}_mhsa_res')([x, Dropout(dropout, name=f'{name}_mhsa_drop')(attn_out)])
+        x = Dropout(dropout, name=f'{name}_mhsa_drop')(attn_out)
+        x = Add(name=f'{name}_mhsa_res')([x, x_norm])
+        # x = Add(name=f'{name}_mhsa_res')([x, x_in])
         return x
 
     def get_model(self, data_params):
@@ -994,14 +1006,18 @@ class Transformer_depth(ActionPredict):
 
         x = self.mhsa_block(x, dropout = 0.3, name='mhsa_1')
         x = self.fem_block(x, dropout = 0.3, name='fem_after_mhsa_1')
-        x = self.mhsa_block(x, dropout = 0.3, name='mhsa_2')
-        x = self.fem_block(x, dropout = 0.3 , name='fem_after_mhsa_2')
+        x = self.mhsa_block(x, dropout = 0.1, name='mhsa_2')
+        x = self.fem_block(x, dropout = 0.1, name='fem_after_mhsa_2')
 
         cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
         intention = Dense(1, activation='sigmoid', name='intention')(cls_out)
+        # h = Dense(256, activation='gelu', kernel_regularizer=regularizers.L2(0.0003), name='head_fc1')(cls_out)
+        # h = Dense(256, activation='gelu', name='head_fc1')(cls_out)
+        # h = Dropout(0.2)(h)
+        # intention = Dense(1, activation='sigmoid', name='intention')(h)
 
         model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in], outputs=intention, name='Transformer_depth')
-        plot_model(model, to_file='model_imgs/Transformer_depth.png')
+        # plot_model(model, to_file='model_imgs/Transformer_depth.png')
         return model
 
     def get_data(self, data_type, data_raw, model_opts):
@@ -1364,140 +1380,6 @@ class Transformer_depth(ActionPredict):
                     d[k] = np.array(d[k])
 
             d['crossing'] = np.array(d['crossing'])[:, 0, :]
-            pos_count = np.count_nonzero(d['crossing'])
-            neg_count = len(d['crossing']) - pos_count
-            print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
-
-##########################################################################################
-# 处理Watch_Ped数据集
-        if 'watch' in opts['dataset']:
-            d = {'depth': data_raw['depth'].copy(),
-                'box': data_raw['bbox'].copy(),
-                'ped_speed': data_raw['ped_speed'].copy(),
-                'vehicle_speed': data_raw['vehicle_speed'].copy(),
-                'crossing': data_raw['crossing'].copy(),             'image_dimension': data_raw['image_dimension'].copy()}
-
-            balance = opts['balance_data'] if data_type == 'train' else False
-            obs_length = opts['obs_length']
-            time_to_event = opts['time_to_event']
-            normalize = opts['normalize_boxes']
-
-            d['box_org'] = d['box'].copy()
-            d['tte'] = []
-            d['trajectory'] = []  # 存储轨迹数据
-
-            if isinstance(time_to_event, int):
-                for k in d.keys():
-                    for i in range(len(d[k])):
-                        d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
-                d['tte'] = [[time_to_event]]*len(data_raw['bbox'])
-            else:
-                overlap = opts['overlap'] # if data_type == 'train' else 0.0
-                olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
-                olap_res = 1 if olap_res < 1 else olap_res
-                crossing_seqs = []
-                image_dim_seqs = []
-                trajectory_seqs = []
-                for k in d.keys():
-                    seqs = []
-                    for idx, seq in enumerate(d[k]):
-                        if k == 'box':
-                            # 检查序列长度是否足够
-                            if len(seq) < obs_length + time_to_event[0]:
-                                # print(f"Warning: Sequence length {len(seq)} is too short for obs_length {obs_length} and time_to_event {time_to_event}")
-                                continue  # 跳过这个序列
-                            start_idx = len(seq) - obs_length - time_to_event[1]
-                            end_idx = len(seq) - obs_length - time_to_event[0]
-                            # 确保索引不为负数
-                            if start_idx < 0:
-                                start_idx = 0
-                            if end_idx < start_idx:
-                                continue  # 跳过无效范围
-                            num_samples = len(range(start_idx, end_idx + 1, olap_res))
-                            crossing_seqs.extend([d['crossing'][idx] for _ in range(num_samples)])
-                            image_dim_seqs.extend([d['image_dimension'][idx] for _ in range(num_samples)])
-                            # 获取当前序列的图像尺寸
-                            img_width, img_height = d['image_dimension'][idx]
-                            # seqs.extend([seq[i:i + obs_length] for i in
-                            #         range(start_idx, end_idx + 1, olap_res)])
-                            # trajectory_seqs.extend([[(seq[i + obs_length][0] + seq[i + obs_length][1]) / 2,
-                            #                          (seq[i + obs_length][2] + seq[i + obs_length][3]) / 2] for i in
-                            #         range(start_idx, end_idx + 1, olap_res)])
-                            # 归一化边界框坐标并添加到seqs
-                            normalized_box_seqs = []
-                            for i in range(start_idx, end_idx + 1, olap_res):
-                                box_seq = seq[i:i + obs_length]
-                                # 归一化每个边界框 [x1, y1, x2, y2]
-                                normalized_seq = []
-                                for box in box_seq:
-                                    normalized_box = [
-                                        box[0] / img_width,   # x1 / width
-                                        box[1] / img_height,  # y1 / height
-                                        box[2] / img_width,   # x2 / width
-                                        box[3] / img_height   # y3 / height
-                                    ]
-                                    normalized_seq.append(normalized_box)
-                                normalized_box_seqs.append(normalized_seq)
-                            seqs.extend(normalized_box_seqs)
-                            
-                            # 归一化轨迹坐标
-                            normalized_traj_seqs = []
-                            for i in range(start_idx, end_idx + 1, olap_res):
-                                center_x = (seq[i + obs_length][0] + seq[i + obs_length][2]) / 2
-                                center_y = (seq[i + obs_length][1] + seq[i + obs_length][3]) / 2
-                                # 归一化轨迹坐标
-                                normalized_traj = [
-                                    center_x / img_width,   # 中心点x坐标 / 图像宽度
-                                    center_y / img_height   # 中心点y坐标 / 图像高度
-                                ]
-                                normalized_traj_seqs.append(normalized_traj)
-                            trajectory_seqs.extend(normalized_traj_seqs)
-                            # d['crossing'] = crossing_seqs
-                            # d['image_dimension'] = image_dim_seqs
-                            
-                        elif k != 'crossing' and k != 'image_dimension' and k != 'trajectory':
-                            if len(seq) < obs_length + time_to_event[0]:
-                                # print(f"Warning: Sequence length {len(seq)} is too short for obs_length {obs_length} and time_to_event {time_to_event}")
-                                continue  # 跳过这个序列
-                            start_idx = len(seq) - obs_length - time_to_event[1]
-                            end_idx = len(seq) - obs_length - time_to_event[0]
-                            # 确保索引不为负数
-                            if start_idx < 0:
-                                start_idx = 0
-                            if end_idx < start_idx:
-                                continue  # 跳过无效范围
-                            seqs.extend([seq[i:i + obs_length] for i in
-                                    range(start_idx, end_idx + 1, olap_res)])
-                    d[k] = seqs
-                d['crossing'] = crossing_seqs
-                d['image_dimension'] = image_dim_seqs   
-                d['trajectory'] = trajectory_seqs
-
-                for seq in data_raw['bbox']:
-                    start_idx = len(seq) - obs_length - time_to_event[1]
-                    end_idx = len(seq) - obs_length - time_to_event[0]
-                    d['tte'].extend([[len(seq) - (i + obs_length)] for i in
-                                    range(start_idx, end_idx + 1, olap_res)])
-            # if normalize:
-            #     for k in d.keys():
-            #         if k != 'tte':
-            #             if k != 'box' and k != 'center':
-            #                 for i in range(len(d[k])):
-            #                     d[k][i] = d[k][i][1:]
-            #             else:
-            #                 for i in range(len(d[k])):
-            #                     d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
-            #         d[k] = np.array(d[k])
-            # else:
-            for k in d.keys():
-            # if k != 'tte':
-                for i in range(len(d[k])):
-                    if not isinstance(d[k][i], np.ndarray):
-                        d[k][i] = np.array(d[k][i])
-            # for k in d.keys():
-                d[k] = np.array(d[k])
-
-            # d['crossing'] = np.array(d['crossing'])[:, 0, :]
             pos_count = np.count_nonzero(d['crossing'])
             neg_count = len(d['crossing']) - pos_count
             print("Negative {} and positive {} sample counts".format(neg_count, pos_count))

@@ -7,6 +7,7 @@ import yaml
 import getopt
 import sys
 import glob
+import shutil
 import pandas as pd
 from datetime import datetime
 
@@ -207,8 +208,16 @@ def test_model_path(path):
     # 保存结果
     save_results(save_dir, results, configs)
     
+    # 清理模型文件
+    cleanup_models(save_dir, results)
+    
+    # 重命名模型目录（添加准确率后缀）
+    final_dir = rename_model_directory(save_dir, results)
+    
     # 显示汇总
     display_summary(results)
+    
+    return final_dir
 
 
 def save_results(model_dir, results, configs):
@@ -272,6 +281,138 @@ def save_results(model_dir, results, configs):
             f.write("\n")
     
     print(f"📝 报告已保存到: {report_path}")
+
+
+def cleanup_models(model_dir, results):
+    """清理模型文件，保留准确率最高的模型，删除epochs目录中的所有模型"""
+    success_results = [r for r in results if r['status'] == 'success']
+    
+    if not success_results:
+        print("❌ 没有成功测试的模型，跳过清理步骤")
+        return
+    
+    # 找到准确率最高的模型
+    df_success = pd.DataFrame(success_results)
+    best_acc_idx = df_success['accuracy'].idxmax()
+    best_model = success_results[best_acc_idx]
+    best_model_path = best_model['model_path']
+    best_model_file = best_model['model_file']
+    
+    print(f"\n🏆 准确率最高的模型: {best_model_file} (准确率: {best_model['accuracy']:.4f})")
+    
+    # epochs目录路径
+    epochs_dir = os.path.join(model_dir, "epochs")
+    
+    if not os.path.exists(epochs_dir):
+        print("📁 epochs目录不存在，无需清理")
+        return
+    
+    # 获取epochs目录中的所有模型文件
+    epoch_files = glob.glob(os.path.join(epochs_dir, "*.h5"))
+    
+    if not epoch_files:
+        print("📁 epochs目录中没有模型文件，无需清理")
+        return
+    
+    print(f"🗑️  开始清理epochs目录，将删除 {len(epoch_files)} 个模型文件...")
+    
+    deleted_count = 0
+    preserved_count = 0
+    
+    for model_file in epoch_files:
+        try:
+            # 如果这个文件就是最佳模型，检查是否需要复制到上级目录
+            if model_file == best_model_path:
+                # 检查上级目录是否已有同名文件
+                target_path = os.path.join(model_dir, os.path.basename(model_file))
+                if not os.path.exists(target_path):
+                    shutil.copy2(model_file, target_path)
+                    print(f"📋 已将最佳模型复制到: {target_path}")
+                preserved_count += 1
+            
+            # 删除epochs目录中的文件
+            os.remove(model_file)
+            deleted_count += 1
+            print(f"🗑️  已删除: {os.path.basename(model_file)}")
+            
+        except Exception as e:
+            print(f"❌ 删除文件失败: {os.path.basename(model_file)} - {str(e)}")
+    
+    print(f"\n✅ 清理完成!")
+    print(f"   删除文件数: {deleted_count}")
+    print(f"   保留的最佳模型: {best_model_file}")
+    
+    return best_model
+    
+    # 如果epochs目录为空，删除该目录
+    try:
+        if not os.listdir(epochs_dir):
+            os.rmdir(epochs_dir)
+            print(f"🗑️  已删除空的epochs目录")
+    except Exception as e:
+        print(f"⚠️  删除epochs目录失败: {str(e)}")
+
+    # 返回最佳模型信息，用于重命名文件夹
+    return best_model
+
+
+def rename_model_directory(model_dir, results):
+    """根据最佳准确率重命名模型目录"""
+    success_results = [r for r in results if r['status'] == 'success']
+    
+    if not success_results:
+        print("❌ 没有成功测试的模型，跳过重命名步骤")
+        return model_dir
+    
+    # 找到最佳准确率
+    df_success = pd.DataFrame(success_results)
+    best_accuracy = df_success['accuracy'].max()
+    
+    # 获取当前目录名和父目录
+    current_dir_name = os.path.basename(model_dir)
+    parent_dir = os.path.dirname(model_dir)
+    
+    # 生成新的目录名（添加准确率后缀）
+    accuracy_suffix = f"_acc_{best_accuracy:.4f}"
+    
+    # 检查目录名是否已经包含准确率后缀
+    if "_acc_" in current_dir_name:
+        # 已有后缀，更新为新的准确率
+        base_name = current_dir_name.split("_acc_")[0]
+        new_dir_name = f"{base_name}{accuracy_suffix}"
+    else:
+        # 没有后缀，直接添加
+        new_dir_name = f"{current_dir_name}{accuracy_suffix}"
+    
+    new_model_dir = os.path.join(parent_dir, new_dir_name)
+    
+    # 如果新目录名与当前目录名相同，则无需重命名
+    if new_model_dir == model_dir:
+        print(f"📁 目录名已包含准确率信息，无需重命名")
+        return model_dir
+    
+    try:
+        # 检查新目录是否已存在
+        if os.path.exists(new_model_dir):
+            print(f"⚠️  目标目录已存在: {new_dir_name}")
+            # 生成一个带时间戳的替代名称
+            timestamp = datetime.now().strftime("%H%M%S")
+            new_dir_name_alt = f"{new_dir_name}_{timestamp}"
+            new_model_dir_alt = os.path.join(parent_dir, new_dir_name_alt)
+            os.rename(model_dir, new_model_dir_alt)
+            print(f"🔄 已重命名为: {new_dir_name_alt}")
+            return new_model_dir_alt
+        else:
+            # 执行重命名
+            os.rename(model_dir, new_model_dir)
+            print(f"🔄 模型目录已重命名:")
+            print(f"   原目录: {current_dir_name}")
+            print(f"   新目录: {new_dir_name}")
+            return new_model_dir
+            
+    except Exception as e:
+        print(f"❌ 重命名目录失败: {str(e)}")
+        return model_dir
 
 
 def display_summary(results):

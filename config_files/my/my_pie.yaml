@@ -12,5 +12,5 @@ net_opts:
 exp_opts:
   datasets: [pie]
   batch_size: [1]
-  epochs: [80]
+  epochs: [60]
   lr: [6.0e-05]

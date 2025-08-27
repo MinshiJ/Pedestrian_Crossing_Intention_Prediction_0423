@@ -1,0 +1,39 @@
+data_opts:
+  data_split_type: default
+  fstride: 1
+  min_track_size: 76
+  sample_type: beh
+  seq_type: crossing
+  subset: default
+model_opts:
+  apply_class_weights: true
+  balance_data: false
+  dataset: jaad
+  enlarge_ratio: 1.5
+  fusion_method: sum
+  fusion_point: early
+  generator: true
+  model: Transformer_depth
+  normalize_boxes: true
+  obs_input_type:
+  - box
+  - depth
+  - vehicle_speed
+  - ped_speed
+  obs_length: 16
+  overlap: 0.8
+  time_to_event:
+  - 30
+  - 60
+net_opts:
+  backbone: vgg16
+  cell_type: gru
+  dropout: 0.1
+  global_pooling: avg
+  num_hidden_units: 256
+  regularizer_val: 0.0001
+train_opts:
+  batch_size: 1
+  epochs: 80
+  learning_scheduler: {}
+  lr: 5.0e-05

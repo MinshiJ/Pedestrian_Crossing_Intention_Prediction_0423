@@ -3,18 +3,18 @@
     
     "configurations": [
 
-        {
-            "name": "train_depth_watch_ped",
-            "type": "debugpy",
-            "request": "launch",
-            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
-            "program": "${workspaceFolder}/train_test.py",
-            "args": [
-                "-c",
-                "config_files/my/my_watch_ped.yaml"
-            ],
-            "console": "integratedTerminal"
-        },
+        // {
+        //     "name": "train_depth_watch_ped",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+        //     "program": "${workspaceFolder}/train_test.py",
+        //     "args": [
+        //         "-c",
+        //         "config_files/my/my_watch_ped.yaml"
+        //     ],
+        //     "console": "integratedTerminal"
+        // },
         {
             "name": "train_depth_jaad",
             "type": "debugpy",
@@ -28,11 +28,37 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "jaad_train_and_test_all_epochs",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_and_test_all_epoch_pipeline.py",
+            
+            "args": [
+                "-c",
+                "config_files/my/my_jaad.yaml"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
             "name": "train_depth_pie",
             "type": "debugpy",
             "request": "launch",
             "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
             "program": "${workspaceFolder}/train_test.py",
+            "args": [
+                "-c",
+                "config_files/my/my_pie.yaml"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pie_train_and_test_all_epochs",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+            "program": "${workspaceFolder}/train_and_test_all_epoch_pipeline.py",
+            
             "args": [
                 "-c",
                 "config_files/my/my_pie.yaml"
@@ -83,14 +109,14 @@
         //         "/home/minshi/Pedestrian_Crossing_Intention_Prediction/data/models/jaad/MASK_PCPA_4_2D/25Apr2025-22h07m23s"
         //     ]
         // },
-        {
-            "name": "run_sequential_training",
-            "type": "debugpy",
-            "request": "launch",
-            "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
-            "program": "${workspaceFolder}/run_sequential_training.py",
-            "console": "integratedTerminal",
-            "justMyCode": true
-        }
+        // {
+        //     "name": "run_sequential_training",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "python": "/home/minshi/miniconda3/envs/tf26/bin/python",
+        //     "program": "${workspaceFolder}/run_sequential_training.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true
+        // }
     ]
 }
