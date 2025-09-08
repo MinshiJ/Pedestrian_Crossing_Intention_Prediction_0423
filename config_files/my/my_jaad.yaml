@@ -16,8 +16,14 @@ net_opts:
 #   epochs: [80, 80]
 #   lr: [5.0e-06, 5.0e-06]
 
+# exp_opts:
+#   datasets: [jaad_beh]
+#   batch_size: [2]
+#   epochs: [30]
+#   lr: [5.0e-05]
+
 exp_opts:
   datasets: [jaad_all]
-  batch_size: [1]
+  batch_size: [2]
   epochs: [80]
   lr: [5.0e-05]

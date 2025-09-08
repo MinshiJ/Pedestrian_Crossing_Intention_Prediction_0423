@@ -37,7 +37,7 @@ from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
 from sklearn.svm import LinearSVC
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-
+from tensorflow.keras.losses import BinaryCrossentropy
 
 ## For deeplabV3 (segmentation)
 import numpy as np
@@ -497,7 +497,7 @@ class ActionPredict(object):
             train_model, 
             to_file=os.path.join(save_path, 'model_structure.png'), 
             show_layer_names=True,      # 显示层名称
-            rankdir='BT',               # 图的方向：TB(上下), LR(左右)
+            rankdir='TB',               # 图的方向：TB(上下), LR(左右)
             # expand_nested=True,         # 展开嵌套模型
             # dpi=300,                    # 图像分辨率
         )
@@ -507,16 +507,14 @@ class ActionPredict(object):
         # base_lr = 3e-4          # 可按你现在的学习率起步
         # weight_decay = 1e-4     # 替代原先各层 L2(3e-4)
 
-        # optimizer = tfa.optimizers.AdamW(
-        #     learning_rate=base_lr,
-        #     weight_decay=weight_decay,
-        #     beta_1=0.9, beta_2=0.999, epsilon=1e-8
-        # )
         train_model.compile(
             loss='binary_crossentropy', 
+            # loss=BinaryCrossentropy(label_smoothing=0.02),   # 标签平滑
+            # loss = tf.keras.losses.BinaryCrossentropy(from_logits=True, label_smoothing=0.0),
             optimizer=optimizer, 
             metrics=['accuracy']
             )
+
         
         # 使用正则化损失函数编译模型
         # train_model.compile(optimizer=optimizer, loss=RegularizedLoss(lambda_=1e-4), metrics=['accuracy'])
@@ -875,7 +873,7 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,
             output_shape=self.d_model,
             dropout=dropout,
-            # kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.0005),  # 权重正则化
             name=f'{name}_attn1'
         )
         attn2 = MultiHeadAttention(
@@ -884,7 +882,7 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,
             output_shape=self.d_model,
             dropout=dropout,
-            # kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.0005),  # 权重正则化
             name=f'{name}_attn2'
         )
         y1 = attn1(query=x2, value=x1, key=x1)
@@ -904,11 +902,14 @@ class Transformer_depth(ActionPredict):
         # x_in = x
         x = LayerNormalization(name=f'{name}_fem_norm')(x)
         shortcut = x
-        # x = Dense(2 * self.d_model, activation=tf.nn.gelu, kernel_regularizer=regularizers.L2(0.0003), name=f'{name}_fem_ffn1_dense1')(x)
-        # x = Dense(self.d_model, activation=None, kernel_regularizer=regularizers.L2(0.0003), name=f'{name}_fem_ffn1_dense2')(x)
-        x = Dense(2 * self.d_model, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
-        x = Dense(self.d_model, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
+        x = Dense(2 * self.d_model, activation=tf.nn.gelu, kernel_regularizer=regularizers.L2(0.0005), name=f'{name}_fem_ffn1_dense1')(x)
+        x = Dense(self.d_model, activation=None, kernel_regularizer=regularizers.L2(0.0005), name=f'{name}_fem_ffn1_dense2')(x)
+        # x = Dense(2 * self.d_model, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
+        # x = Dense(self.d_model, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
         x = Dropout(dropout, name=f'{name}_fem_drop')(x)
+        # x = tfa.layers.StochasticDepth(
+        #     survival_probability=0.9, name=f'{name}_sd'
+        #     )([x, x_in])  # 随机深度
         x = Add(name=f'{name}_fem_add')([shortcut, x])
         # x = Add(name=f'{name}_fem_add')([x_in, x])
         return x
@@ -964,15 +965,17 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,   # 显式给出
             output_shape=self.d_model,                  # 输出回 d_model，方便残差相加
             dropout=dropout,
-            # kernel_regularizer=regularizers.L2(0.001),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.0005),  # 权重正则化
             name=f'{name}_mhsa'
         )
 
         attn_out = attn(
             query=x_norm, value=x_norm, key=x_norm,
-            # attention_mask=attention_mask
         )
         x = Dropout(dropout, name=f'{name}_mhsa_drop')(attn_out)
+        # x = tfa.layers.StochasticDepth(
+        #     survival_probability=0.9, name=f'{name}_sd'
+        # )([x, x_in])
         x = Add(name=f'{name}_mhsa_res')([x, x_norm])
         # x = Add(name=f'{name}_mhsa_res')([x, x_in])
         return x
@@ -1004,20 +1007,34 @@ class Transformer_depth(ActionPredict):
         # Add positional encoding
         x = self.positional_encoding(x)
 
-        x = self.mhsa_block(x, dropout = 0.3, name='mhsa_1')
-        x = self.fem_block(x, dropout = 0.3, name='fem_after_mhsa_1')
-        x = self.mhsa_block(x, dropout = 0.1, name='mhsa_2')
-        x = self.fem_block(x, dropout = 0.1, name='fem_after_mhsa_2')
+        x = self.mhsa_block(x, dropout = 0.1, name='mhsa_1')
+        x = self.fem_block(x, dropout = 0.1, name='fem_after_mhsa_1')
+        # x = self.mhsa_block(x, dropout = 0.2, name='mhsa_2')
+        # x = self.fem_block(x, dropout = 0.2, name='fem_after_mhsa_2')
 
         cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
-        intention = Dense(1, activation='sigmoid', name='intention')(cls_out)
-        # h = Dense(256, activation='gelu', kernel_regularizer=regularizers.L2(0.0003), name='head_fc1')(cls_out)
-        # h = Dense(256, activation='gelu', name='head_fc1')(cls_out)
-        # h = Dropout(0.2)(h)
-        # intention = Dense(1, activation='sigmoid', name='intention')(h)
+        cls_out = Dropout(0.1, name='cls_dropout')(cls_out)
+        h = Dense(128, activation='gelu', name='head_fc1')(cls_out)
+        h = Dropout(0.1, name='head_dropout1')(h)
+        intention = Dense(1, activation='sigmoid', name='intention')(h)
+
+        # === Head: ViT-style with logits ===
+        # cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
+        # cls_out = LayerNormalization(name='cls_prelayernorm')(cls_out)   
+        # h = Dense(2 * self.d_model, activation=gelu,
+        #         kernel_regularizer=regularizers.L2(3e-4),
+        #         name='head_fc1')(cls_out)
+        # h = Dropout(0.2, name='head_dropout1')(h)
+        # h = Dense(self.d_model, activation=gelu,
+        #         kernel_regularizer=regularizers.L2(3e-4),
+        #         name='head_fc2')(h)
+        # h = Dropout(self.dropout, name='head_dropout2')(h)
+
+        # logit = Dense(1, name='intention_logit')(h)
+        # intention = Activation('sigmoid', name='intention')(logit)
+
 
         model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in], outputs=intention, name='Transformer_depth')
-        # plot_model(model, to_file='model_imgs/Transformer_depth.png')
         return model
 
     def get_data(self, data_type, data_raw, model_opts):

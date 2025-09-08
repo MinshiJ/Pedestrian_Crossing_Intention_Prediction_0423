@@ -149,6 +149,14 @@ def test_model_path(path):
     else:
         print(f"🚀 开始测试模型目录: {path}")
     
+    # 确定保存目录
+    if os.path.isfile(path):
+        save_dir = os.path.dirname(path)
+        if os.path.basename(save_dir) == 'epochs':
+            save_dir = os.path.dirname(save_dir)
+    else:
+        save_dir = path
+    
     # 加载配置
     configs = load_config_from_path(path)
     print("✅ 配置文件加载成功")
@@ -197,15 +205,7 @@ def test_model_path(path):
         else:
             print(f"❌ {result['status']}")
     
-    # 确定保存目录
-    if os.path.isfile(path):
-        save_dir = os.path.dirname(path)
-        if os.path.basename(save_dir) == 'epochs':
-            save_dir = os.path.dirname(save_dir)
-    else:
-        save_dir = path
-    
-    # 保存结果
+    # 保存结果（使用之前确定的save_dir）
     save_results(save_dir, results, configs)
     
     # 清理模型文件
@@ -341,8 +341,6 @@ def cleanup_models(model_dir, results):
     print(f"\n✅ 清理完成!")
     print(f"   删除文件数: {deleted_count}")
     print(f"   保留的最佳模型: {best_model_file}")
-    
-    return best_model
     
     # 如果epochs目录为空，删除该目录
     try:

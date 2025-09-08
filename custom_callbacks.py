@@ -7,6 +7,7 @@ import os
 import json
 import yaml
 import pickle
+import shutil
 import numpy as np
 import tensorflow as tf
 from datetime import datetime
@@ -35,6 +36,29 @@ class EpochSaveCallback(tf.keras.callbacks.Callback):
         
         # 训练历史记录
         self.epoch_history = []
+        
+    def on_train_begin(self, logs=None):
+        """训练开始时调用"""
+        print(f"\n🚀 Training started!")
+        print(f"📁 Models will be saved to: {self.save_dir}")
+        
+        # 复制 action_predict.py 到模型目录（在训练开始时）
+        try:
+            # 获取项目根目录（假设callback文件在项目根目录）
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            source_file = os.path.join(script_dir, "action_predict.py")
+            target_file = os.path.join(self.save_dir, "action_predict.py")
+            
+            if os.path.exists(source_file):
+                if not os.path.exists(target_file):
+                    shutil.copy2(source_file, target_file)
+                    print(f"📋 已复制 action_predict.py 到模型目录")
+                else:
+                    print(f"📁 action_predict.py 已存在于模型目录中")
+            else:
+                print(f"⚠️  未找到源文件: {source_file}")
+        except Exception as e:
+            print(f"❌ 复制 action_predict.py 失败: {str(e)}")
         
     def on_epoch_end(self, epoch, logs=None):
         """每个epoch结束时调用"""
