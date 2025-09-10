@@ -873,7 +873,7 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,
             output_shape=self.d_model,
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.0005),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.005),  # 权重
             name=f'{name}_attn1'
         )
         attn2 = MultiHeadAttention(
@@ -882,7 +882,7 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,
             output_shape=self.d_model,
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.0005),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.005),  # 权重正则化
             name=f'{name}_attn2'
         )
         y1 = attn1(query=x2, value=x1, key=x1)
@@ -902,8 +902,8 @@ class Transformer_depth(ActionPredict):
         # x_in = x
         x = LayerNormalization(name=f'{name}_fem_norm')(x)
         shortcut = x
-        x = Dense(2 * self.d_model, activation=tf.nn.gelu, kernel_regularizer=regularizers.L2(0.0005), name=f'{name}_fem_ffn1_dense1')(x)
-        x = Dense(self.d_model, activation=None, kernel_regularizer=regularizers.L2(0.0005), name=f'{name}_fem_ffn1_dense2')(x)
+        x = Dense(2 * self.d_model, activation=tf.nn.gelu, kernel_regularizer=regularizers.L2(0.005), name=f'{name}_fem_ffn1_dense1')(x)
+        x = Dense(self.d_model, activation=None, kernel_regularizer=regularizers.L2(0.005), name=f'{name}_fem_ffn1_dense2')(x)
         # x = Dense(2 * self.d_model, activation=tf.nn.gelu, name=f'{name}_fem_ffn1_dense1')(x)
         # x = Dense(self.d_model, activation=None, name=f'{name}_fem_ffn1_dense2')(x)
         x = Dropout(dropout, name=f'{name}_fem_drop')(x)
@@ -965,7 +965,7 @@ class Transformer_depth(ActionPredict):
             value_dim=self.d_model // self.num_heads,   # 显式给出
             output_shape=self.d_model,                  # 输出回 d_model，方便残差相加
             dropout=dropout,
-            kernel_regularizer=regularizers.L2(0.0005),  # 权重正则化
+            kernel_regularizer=regularizers.L2(0.005),  # 权重正则化
             name=f'{name}_mhsa'
         )
 
@@ -1007,15 +1007,15 @@ class Transformer_depth(ActionPredict):
         # Add positional encoding
         x = self.positional_encoding(x)
 
-        x = self.mhsa_block(x, dropout = 0.1, name='mhsa_1')
-        x = self.fem_block(x, dropout = 0.1, name='fem_after_mhsa_1')
+        x = self.mhsa_block(x, dropout = 0.2, name='mhsa_1')
+        x = self.fem_block(x, dropout = 0.2, name='fem_after_mhsa_1')
         # x = self.mhsa_block(x, dropout = 0.2, name='mhsa_2')
         # x = self.fem_block(x, dropout = 0.2, name='fem_after_mhsa_2')
 
         cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
-        cls_out = Dropout(0.1, name='cls_dropout')(cls_out)
+        cls_out = Dropout(0.2, name='cls_dropout')(cls_out)
         h = Dense(128, activation='gelu', name='head_fc1')(cls_out)
-        h = Dropout(0.1, name='head_dropout1')(h)
+        h = Dropout(0.2, name='head_dropout1')(h)
         intention = Dense(1, activation='sigmoid', name='intention')(h)
 
         # === Head: ViT-style with logits ===
