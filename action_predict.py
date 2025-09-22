@@ -1,76 +1,60 @@
-
+# -*- coding: utf-8 -*-
+import os
 import time
+import tarfile
+import pickle
 import yaml
+import json
 import wget
 import cv2
+import scipy.misc
+import numpy as np
+import pandas as pd
+from PIL import Image
+import matplotlib
+import tensorflow as tf
+from matplotlib import pyplot as plt
+from matplotlib import gridspec
+
 from utils import *
 from custom_callbacks import EpochSaveCallback, DetailedLoggingCallback, MetricsVisualizationCallback
 from base_models import AlexNet, C3DNet, convert_to_fcn, C3DNet2
 from base_models import I3DNet
-from tensorflow.keras.layers import Input, Concatenate, Dense
-from tensorflow.keras.layers import GRU, LSTM, GRUCell
-from tensorflow.keras.layers import Dropout, LSTMCell, RNN
-from tensorflow.keras.utils import plot_model
-from tensorflow.keras.layers import Flatten, Average, Add
-from tensorflow.keras.layers import ConvLSTM2D, Conv2D
+
+from tensorflow.keras.layers import (Input, Concatenate, Dense, GRU, LSTM, GRUCell,
+                                     Dropout, LSTMCell, RNN, Flatten, Average, Add,
+                                     ConvLSTM2D, Conv2D, GlobalAveragePooling2D, GlobalMaxPooling2D,
+                                     Lambda, dot, concatenate, Activation)
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint
-from tensorflow.keras.applications import vgg16, resnet50
-from tensorflow.keras.layers import GlobalAveragePooling2D, GlobalMaxPooling2D, Lambda, dot, concatenate, Activation
+from tensorflow.keras.utils import plot_model, Sequence, register_keras_serializable
 from tensorflow.keras.optimizers import Adam, SGD, RMSprop
 from tensorflow.keras.metrics import Precision, Recall
 from tensorflow.keras import regularizers
 from tensorflow.keras import backend as K
-from tensorflow.keras.utils import Sequence
-from tensorflow.keras.utils import register_keras_serializable
 from tensorflow.keras.activations import gelu
-import tensorflow_addons as tfa
+
 try:
     from tensorflow.keras.layers import LayerNormalization, MultiHeadAttention
 except ImportError:
     # TensorFlow 2.6及以下版本使用这个路径
     from tensorflow.keras.layers.experimental import LayerNormalization
     from tensorflow.keras.layers import MultiHeadAttention
-# from keras_hub.modeling_layers import SinePositionEncoding
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
+
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                             f1_score, roc_auc_score, roc_curve, precision_recall_curve)
 from sklearn.svm import LinearSVC
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.losses import BinaryCrossentropy
 
-## For deeplabV3 (segmentation)
-import numpy as np
-from PIL import Image
-import matplotlib
-import tensorflow as tf
-from matplotlib import gridspec
-from matplotlib import pyplot as plt
-import tarfile
-import os
-import time
-import scipy.misc
-import cv2
 
-# from tensorflow.compat.v1 import ConfigProto
-# from tensorflow.compat.v1 import InteractiveSession
-# config = ConfigProto()
-# config.gpu_options.allow_growth = True
-# session = InteractiveSession(config=config)
-
-
-from tensorflow.keras.applications.vgg19 import VGG19
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.vgg19 import preprocess_input
-from tensorflow.keras.models import Model
-import numpy as np
-
-
-
-# TODO: Make all global class parameters to minimum , e.g. no model generation
+# ================================
+# Base Class
+# ================================
 class ActionPredict(object):
     """
-        A base interface class for creating prediction models
+    A base interface class for creating prediction models
     """
 
     def __init__(self,
@@ -92,225 +76,6 @@ class ActionPredict(object):
         self._backbone = backbone
         self._generator = None # use data generator for train/test 
 
-    def get_data_sequence(self, data_type, data_raw, opts):
-        """
-        Generates raw sequences from a given dataset
-        Args:
-            data_type: Split type of data, whether it is train, test or val
-            data_raw: Raw tracks from the dataset
-            opts:  Options for generating data samples
-        Returns:
-            A list of data samples extracted from raw data
-            Positive and negative data counts
-        """
-        # print('\n#####################################')
-        # print('Generating raw data')
-        # print('#####################################')
-        d = {'center': data_raw['center'].copy(),
-             'box': data_raw['bbox'].copy(),
-             'ped_id': data_raw['pid'].copy(),
-             'crossing': data_raw['activities'].copy(),
-             'image': data_raw['image'].copy()}
-
-        balance = opts['balance_data'] if data_type == 'train' else False
-        obs_length = opts['obs_length']
-        time_to_event = opts['time_to_event']
-        normalize = opts['normalize_boxes']
-
-        try:
-            d['speed'] = data_raw['obd_speed'].copy()
-        except KeyError:
-            d['speed'] = data_raw['vehicle_act'].copy()
-            # print('Jaad dataset does not have speed information')
-            # print('Vehicle actions are used instead')
-        if balance:
-            self.balance_data_samples(d, data_raw['image_dimension'][0])
-        d['box_org'] = d['box'].copy()
-        d['tte'] = []
-
-        if isinstance(time_to_event, int):
-            for k in d.keys():
-                for i in range(len(d[k])):
-                    d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
-            d['tte'] = [[time_to_event]]*len(data_raw['bbox'])
-        else:
-            overlap = opts['overlap'] # if data_type == 'train' else 0.0
-            olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
-            olap_res = 1 if olap_res < 1 else olap_res
-            for k in d.keys():
-                seqs = []
-                for seq in d[k]:
-                    start_idx = len(seq) - obs_length - time_to_event[1]
-                    end_idx = len(seq) - obs_length - time_to_event[0]
-                    seqs.extend([seq[i:i + obs_length] for i in
-                                 range(start_idx, end_idx + 1, olap_res)])
-                d[k] = seqs
-
-            for seq in data_raw['bbox']:
-                start_idx = len(seq) - obs_length - time_to_event[1]
-                end_idx = len(seq) - obs_length - time_to_event[0]
-                d['tte'].extend([[len(seq) - (i + obs_length)] for i in
-                                range(start_idx, end_idx + 1, olap_res)])
-        if normalize:
-            for k in d.keys():
-                if k != 'tte':
-                    if k != 'box' and k != 'center':
-                        for i in range(len(d[k])):
-                            d[k][i] = d[k][i][1:]
-                    else:
-                        for i in range(len(d[k])):
-                            d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
-                d[k] = np.array(d[k])
-        else:
-            for k in d.keys():
-                d[k] = np.array(d[k])
-
-        d['crossing'] = np.array(d['crossing'])[:, 0, :]
-        pos_count = np.count_nonzero(d['crossing'])
-        neg_count = len(d['crossing']) - pos_count
-        # print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
-
-        return d, neg_count, pos_count
-
-    def balance_data_samples(self, d, img_width, balance_tag='crossing'):
-        """
-        Balances the ratio of positive and negative data samples. The less represented
-        data type is augmented by flipping the sequences
-        Args:
-            d: Sequence of data samples
-            img_width: Width of the images
-            balance_tag: The tag to balance the data based on
-        """
-        print("Balancing with respect to {} tag".format(balance_tag))
-        gt_labels = [gt[0] for gt in d[balance_tag]]
-        num_pos_samples = np.count_nonzero(np.array(gt_labels))
-        num_neg_samples = len(gt_labels) - num_pos_samples
-
-        # finds the indices of the samples with larger quantity
-        if num_neg_samples == num_pos_samples:
-            print('Positive and negative samples are already balanced')
-        else:
-            print('Unbalanced: \t Positive: {} \t Negative: {}'.format(num_pos_samples, num_neg_samples))
-            if num_neg_samples > num_pos_samples:
-                gt_augment = 1
-            else:
-                gt_augment = 0
-
-            num_samples = len(d[balance_tag])
-            for i in range(num_samples):
-                if d[balance_tag][i][0][0] == gt_augment:
-                    for k in d:
-                        if k == 'center':
-                            flipped = d[k][i].copy()
-                            flipped = [[img_width - c[0], c[1]]
-                                       for c in flipped]
-                            d[k].append(flipped)
-                        if k == 'box':
-                            flipped = d[k][i].copy()
-                            flipped = [np.array([img_width - b[2], b[1], img_width - b[0], b[3]])
-                                       for b in flipped]
-                            d[k].append(flipped)
-                        if k == 'image':
-                            flipped = d[k][i].copy()
-                            flipped = [im.replace('.png', '_flip.png') for im in flipped]
-                            d[k].append(flipped)
-                        if k in ['speed', 'ped_id', 'crossing', 'walking', 'looking']:
-                            d[k].append(d[k][i].copy())
-
-            gt_labels = [gt[0] for gt in d[balance_tag]]
-            num_pos_samples = np.count_nonzero(np.array(gt_labels))
-            num_neg_samples = len(gt_labels) - num_pos_samples
-            if num_neg_samples > num_pos_samples:
-                rm_index = np.where(np.array(gt_labels) == 0)[0]
-            else:
-                rm_index = np.where(np.array(gt_labels) == 1)[0]
-
-            # Calculate the difference of sample counts
-            dif_samples = abs(num_neg_samples - num_pos_samples)
-            # shuffle the indices
-            np.random.seed(42)
-            np.random.shuffle(rm_index)
-            # reduce the number of indices to the difference
-            rm_index = rm_index[0:dif_samples]
-
-            # update the data
-            for k in d:
-                seq_data_k = d[k]
-                d[k] = [seq_data_k[i] for i in range(0, len(seq_data_k)) if i not in rm_index]
-
-            new_gt_labels = [gt[0] for gt in d[balance_tag]]
-            num_pos_samples = np.count_nonzero(np.array(new_gt_labels))
-            print('Balanced:\t Positive: %d  \t Negative: %d\n'
-                  % (num_pos_samples, len(d[balance_tag]) - num_pos_samples))
-
-    def get_data(self, data_type, data_raw, model_opts):
-        """
-        Generates data train/test/val data
-        Args:
-            data_type: Split type of data, whether it is train, test or val
-            data_raw: Raw tracks from the dataset
-            model_opts: Model options for generating data
-        Returns:
-            A dictionary containing, data, data parameters used for model generation,
-            effective dimension of data (the number of rgb images to be used calculated accorfing
-            to the length of optical flow window) and negative and positive sample counts
-        """
-
-        self._generator = model_opts.get('generator', False)
-        data_type_sizes_dict = {}
-        process = model_opts.get('process', True)
-        dataset = model_opts['dataset']
-        data, neg_count, pos_count = self.get_data_sequence(data_type, data_raw, model_opts)
-
-        data_type_sizes_dict['box'] = data['box'].shape[1:]
-        if 'speed' in data.keys():
-            data_type_sizes_dict['speed'] = data['speed'].shape[1:]
-
-        # Store the type and size of each image
-        _data = []
-        data_sizes = []
-        data_types = []
-
-        for d_type in model_opts['obs_input_type']:
-            if 'local' in d_type or 'context' in d_type or 'mask' in d_type:
-                features, feat_shape = self.get_context_data(model_opts, data, data_type, d_type)
-            elif 'pose' in d_type:
-                path_to_pose, _ = get_path(save_folder='poses',
-                                           dataset=dataset,
-                                           save_root_folder='data/features')
-                features = get_pose(data['image'],
-                                    data['ped_id'],
-                                    data_type=data_type,
-                                    file_path=path_to_pose,
-                                    dataset=model_opts['dataset'])
-                feat_shape = features.shape[1:]
-            else:
-                features = data[d_type]
-                feat_shape = features.shape[1:]
-            _data.append(features)
-            data_sizes.append(feat_shape)
-            data_types.append(d_type)
-
-        # create the final data file to be returned
-        if self._generator:
-            _data = (DataGenerator(data=_data,
-                                   labels=data['crossing'],
-                                   data_sizes=data_sizes,
-                                   process=process,
-                                   global_pooling=self._global_pooling,
-                                   input_type_list=model_opts['obs_input_type'],
-                                   batch_size=model_opts['batch_size'],
-                                   shuffle=data_type != 'test',
-                                   to_fit=data_type != 'test'), data['crossing']) # set y to None
-        else:
-            _data = (_data, data['crossing'])
-
-        return {'data': _data,
-                'ped_id': data['ped_id'],
-                'image': data['image'],
-                'tte': data['tte'],
-                'data_params': {'data_types': data_types, 'data_sizes': data_sizes},
-                'count': {'neg_count': neg_count, 'pos_count': pos_count}}
 
     def log_configs(self, config_path, batch_size, epochs,
                     lr, model_opts):
@@ -332,106 +97,6 @@ class ActionPredict(object):
                        fid, default_flow_style=False)
 
         print('Wrote configs to {}'.format(config_path))
-
-    def class_weights(self, apply_weights, sample_count):
-        """
-        Computes class weights for imbalanced data used during training
-        Args:
-            apply_weights: Whether to apply weights
-            sample_count: Positive and negative sample counts
-        Returns:
-            A dictionary of class weights or None if no weights to be calculated
-        """
-        if not apply_weights:
-            return None
-
-        total = sample_count['neg_count'] + sample_count['pos_count']
-        # formula from sklearn
-        # neg_weight = (1 / sample_count['neg_count']) * (total) / 2.0
-        # pos_weight = (1 / sample_count['pos_count']) * (total) / 2.0
-        
-        # use simple ratio
-        neg_weight = sample_count['pos_count']/total
-        pos_weight = sample_count['neg_count']/total
-
-        print("### Class weights: negative {:.3f} and positive {:.3f} ###".format(neg_weight, pos_weight))
-        return {0: neg_weight, 1: pos_weight}
-
-    def get_callbacks(self, learning_scheduler, model_path):
-        """
-        Creates a list of callabcks for training
-        Args:
-            learning_scheduler: Whether to use callbacks
-        Returns:
-            A list of call backs or None if learning_scheduler is false
-        """
-        callbacks = None
-
-        # # Set up learning schedulers
-        # if learning_scheduler:
-        #     callbacks = []
-            # if 'early_stop' in learning_scheduler:
-            #     default_params = {'monitor': 'val_loss','restore_best_weights': True,
-            #                       'min_delta': 1.0, 'patience': 5,
-            #                       'verbose': 1}
-            #     default_params.update(learning_scheduler['early_stop'])
-            #     callbacks.append(EarlyStopping(**default_params))
-
-        #     if 'plateau' in learning_scheduler:
-        #         default_params = {'monitor': 'val_loss',
-        #                           'factor': 0.2, 'patience': 5,
-        #                           'cooldown': 0,
-        #                           'min_lr': 1e-08, 'verbose': 1}
-        #         default_params.update(learning_scheduler['plateau'])
-        #         callbacks.append(ReduceLROnPlateau(**default_params))
-
-
-        #     if 'checkpoint' in learning_scheduler:
-        #         default_params = {'filepath': model_path, 'monitor': 'val_loss',
-        #                           'mode': 'min',
-        #                           'save_best_only': True, 'save_weights_only': False,
-        #                           'save_freq': 'epoch', 'verbose': 2}
-        #         default_params.update(learning_scheduler['checkpoint'])
-        #         callbacks.append(ModelCheckpoint(**default_params))
-
-        if learning_scheduler:
-            callbacks = []
-            if 'early_stop' in learning_scheduler:
-            # —— 1. 提前停止：连续 patience 轮 val_loss 不下降就早停
-                default_params = {'monitor': 'val_loss','restore_best_weights': True,
-                                  'min_delta': 1.0, 'patience': 5,
-                                  'verbose': 1}
-                default_params.update(learning_scheduler['early_stop'])
-                callbacks.append(EarlyStopping(**default_params))
-            
-
-        # —— 2. 学习率衰减
-        if 'plateau' in learning_scheduler:
-            reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
-                # monitor='val_loss',
-                monitor='loss',
-                mode='min',
-                factor=0.2,               # 学习率下降幅度大
-                patience=5,               # 多等几轮
-                cooldown=1,               # 给它缓一轮
-                min_lr=1e-7,
-                verbose=1)
-            callbacks.append(reduce_lr)
-
-        # —— 3. 模型断点保存：只在 val_loss 改善时保存
-        ckpt = tf.keras.callbacks.ModelCheckpoint(
-            filepath='checkpoints/best.ckpt',
-            monitor='val_loss',
-            mode='min',
-            save_best_only=True,
-            save_weights_only=True,
-            verbose=1)
-
-        # callbacks = [early_stop, reduce_lr, ckpt]
-        # callbacks = [reduce_lr, ckpt]
-        # callbacks = [reduce_lr]
-
-        return callbacks
 
     def get_optimizer(self, optimizer):
         """
@@ -494,54 +159,33 @@ class ActionPredict(object):
         # plot_model(train_model, to_file=path_params['save_folder']+'/model_structure.png', show_shapes=True)
         # Generate detailed model architecture diagram
         plot_model(
-            train_model, 
-            to_file=os.path.join(save_path, 'model_structure.png'), 
-            show_layer_names=True,      # 显示层名称
-            rankdir='TB',               # 图的方向：TB(上下), LR(左右)
-            # expand_nested=True,         # 展开嵌套模型
-            # dpi=300,                    # 图像分辨率
+            train_model,
+            to_file=os.path.join(save_path, 'model_structure.png'),
+            show_layer_names=True,
+            rankdir='TB',
         )
         # Train the model
-        class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
+        # class_w = self.class_weights(model_opts['apply_class_weights'], data_train['count'])
         optimizer = self.get_optimizer(optimizer)(lr=lr)
         # base_lr = 3e-4          # 可按你现在的学习率起步
         # weight_decay = 1e-4     # 替代原先各层 L2(3e-4)
 
         train_model.compile(
-            loss='binary_crossentropy', 
-            # loss=BinaryCrossentropy(label_smoothing=0.02),   # 标签平滑
-            # loss = tf.keras.losses.BinaryCrossentropy(from_logits=True, label_smoothing=0.0),
-            optimizer=optimizer, 
-            metrics=['accuracy']
-            )
+            loss={
+                'intention': 'binary_crossentropy',
+                'etraj': 'mse'
+            },
+            loss_weights={
+                'intention': 1,
+                'etraj': 0  # 轨迹 loss 权重可调
+            },
+            optimizer=optimizer,
+            metrics={
+                'intention': ['accuracy'],
+                'etraj': ['mae']
+            }
+        )
 
-        
-        # 使用正则化损失函数编译模型
-        # train_model.compile(optimizer=optimizer, loss=RegularizedLoss(lambda_=1e-4), metrics=['accuracy'])
-
-        # === 原始回调设置（注释掉） ===
-        ## reivse fit
-        # callbacks = self.get_callbacks(learning_scheduler, model_path)
-        # callbacks = []
-        # reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
-        #     # monitor='val_loss',
-        #     monitor='loss',
-        #     mode='min',
-        #     factor=0.2,               # 学习率下降幅度大
-        #     patience=5,               # 多等几轮
-        #     cooldown=1,               # 给它缓一轮
-        #     min_lr=1e-7,
-        #     verbose=1)
-        # callbacks.append(reduce_lr)
-        # ckpt = tf.keras.callbacks.ModelCheckpoint(
-        #     filepath='checkpoints/best.ckpt',
-        #     monitor='val_loss',
-        #     mode='min',
-        #     save_best_only=True,
-        #     save_weights_only=True,
-        #     verbose=1)
-        # callbacks.append(ckpt)
-        
         # === 新的回调设置：保存每个epoch的训练结果 ===
         callbacks = []
         
@@ -559,23 +203,6 @@ class ActionPredict(object):
             log_frequency=1  # 每个epoch都记录
         )
         callbacks.append(log_callback)
-        
-        # 3. 指标可视化（可选）
-        # viz_callback = MetricsVisualizationCallback(
-        #     save_dir=os.path.join(os.path.dirname(model_path), 'plots'),
-        #     plot_frequency=5  # 每5个epoch绘制一次
-        # )
-        # callbacks.append(viz_callback)
-        
-        # 4. 传统的最佳权重保存（备份）
-        # best_ckpt = tf.keras.callbacks.ModelCheckpoint(
-        #     filepath='checkpoints/best.ckpt',
-        #     monitor='val_loss',
-        #     mode='min',
-        #     save_best_only=True,
-        #     save_weights_only=False,
-        #     verbose=1)
-        # callbacks.append(best_ckpt)
         
         # 5. 学习率调度器（可选）
         if model_opts.get('use_lr_scheduler', False):
@@ -595,7 +222,7 @@ class ActionPredict(object):
                                   batch_size=None,
                                   epochs=epochs,
                                   validation_data=data_val,
-                                  class_weight=class_w,
+                                #   class_weight=class_w,
                                   verbose=1,
                                   callbacks=callbacks)
         # print(history.history.keys())
@@ -618,8 +245,6 @@ class ActionPredict(object):
 
         # Save training history
         history_path, saved_files_path = get_path(**path_params, file_name='history.pkl')
-        # with open(history_path, 'wb') as fid:
-        #     pickle.dump(history.history, fid, pickle.HIGHEST_PROTOCOL)
         
         # 转换 history.history 为可序列化的格式
         history_data = {}
@@ -650,26 +275,28 @@ class ActionPredict(object):
         """
         with open(os.path.join(model_path, 'configs.yaml'), 'r') as fid:
             opts = yaml.safe_load(fid)
-            # try:
-            #     model_opts = pickle.load(fid)
-            # except:
-            #     model_opts = pickle.load(fid, encoding='bytes')
 
         test_model = load_model(os.path.join(model_path, 'model.h5'))
         # test_model.summary()
 
         test_data = self.get_data('test', data_test, {**opts['model_opts'], 'batch_size': 1})
 
-        test_results = test_model.predict(test_data['data'][0], batch_size=1, verbose=1)
-        
-        acc = accuracy_score(test_data['data'][1], np.round(test_results))
-        f1 = f1_score(test_data['data'][1], np.round(test_results))
-        auc = roc_auc_score(test_data['data'][1], np.round(test_results))
-        roc = roc_curve(test_data['data'][1], test_results)
-        precision = precision_score(test_data['data'][1], np.round(test_results))
-        recall = recall_score(test_data['data'][1], np.round(test_results))
-        pre_recall = precision_recall_curve(test_data['data'][1], test_results)
+        # 只取输入部分
+        X_test, y_test = test_data['data']
 
+        # 如果是 generator 模式
+        if isinstance(X_test, DataGenerator):
+            test_results = test_model.predict(X_test, verbose=1)
+        else:
+            test_results = test_model.predict(X_test, batch_size=1, verbose=1)
+
+        intention_results = test_results[0]
+
+        acc = accuracy_score(y_test, np.round(intention_results))
+        f1 = f1_score(y_test, np.round(intention_results))
+        auc = roc_auc_score(y_test, np.round(intention_results))
+        precision = precision_score(y_test, np.round(intention_results))
+        recall = recall_score(y_test, np.round(intention_results))
         
         # THIS IS TEMPORARY, REMOVE BEFORE RELEASE
         with open(os.path.join(model_path, 'test_output.pkl'), 'wb') as picklefile:
@@ -687,7 +314,7 @@ class ActionPredict(object):
         print('\033[1m\033[92m🎯 MODEL TEST RESULTS 🎯\033[0m')
         print('\033[96m' + '='*70 + '\033[0m')
         print('\033[93mAccuracy:   \033[0m\033[1m\033[92m{:.4f}\033[0m'.format(acc))
-        print('\033[94mAUC:        \033[0m\033[1m\033[92m{:.4f}\033[0m'.format(auc))
+        print('\033[94mAUC:        \033[0m\033[1m\033[92m{:.4f}\033[0m'.format(0 if np.isnan(auc) else auc))
         print('\033[95mF1-Score:   \033[0m\033[1m\033[92m{:.4f}\033[0m'.format(f1))
         print('\033[96mPrecision:  \033[0m\033[1m\033[92m{:.4f}\033[0m'.format(precision))
         print('\033[91mRecall:     \033[0m\033[1m\033[92m{:.4f}\033[0m'.format(recall))
@@ -730,22 +357,38 @@ class DataGenerator(Sequence):
                  batch_size=32,
                  shuffle=True,
                  to_fit=True,
-                 stack_feats=False):
+                 stack_feats=False,
+                 class_weight=None):
         self.data = data
         self.labels = labels
         self.process = process
         self.global_pooling = global_pooling
         self.input_type_list = input_type_list
-        self.batch_size = 1 if len(self.labels) < batch_size  else batch_size        
+
+        base_len = len(self.labels[0]) if (isinstance(self.labels, list) and len(self.labels) > 0) else len(self.labels)
+        self.batch_size = 1 if base_len < batch_size else batch_size
+
         self.data_sizes = data_sizes
         self.shuffle = shuffle
         self.to_fit = to_fit
         self.stack_feats = stack_feats
         self.indices = None
         self.on_epoch_end()
+        self.class_weight = class_weight  # 若外部未提供，则自动估计
+
+        # —— 自动依据训练标签估计正负类权重（仅用于 intention），不需要配置文件
+        y_all = self.labels[0] if (isinstance(self.labels, list) and len(self.labels) > 0) else self.labels
+        if self.class_weight is None and y_all is not None:
+            y_flat = np.asarray(y_all).astype(np.int32).reshape(-1)
+            pos = int(np.sum(y_flat))
+            neg = int(y_flat.shape[0] - pos)
+            total = max(1, pos + neg)
+            # 经典做法：权重与频率成反比；谁少谁权重大
+            self.class_weight = {0: pos / total, 1: neg / total}
+            print(f"[DataGenerator] auto class_weight -> {self.class_weight}")
 
     def __len__(self):
-        return int(np.floor(len(self.data[0])/self.batch_size))
+        return int(np.floor(len(self.data[0]) / self.batch_size))
 
     def on_epoch_end(self):
         self.indices = np.arange(len(self.data[0]))
@@ -753,12 +396,13 @@ class DataGenerator(Sequence):
             np.random.shuffle(self.indices)
 
     def __getitem__(self, index):
-        indices = self.indices[index*self.batch_size: (index+1)*self.batch_size]
-
+        indices = self.indices[index * self.batch_size: (index + 1) * self.batch_size]
         X = self._generate_X(indices)
         if self.to_fit:
             y = self._generate_y(indices)
-            return X, y
+            sw = self._generate_sample_weight(y)
+            # sw = {'intention': np.array([0, 0.001], dtype=np.float32), 'etraj': np.array([0, 0], dtype=np.float32)}
+            return X, y, sw
         else:
             return X
 
@@ -778,14 +422,14 @@ class DataGenerator(Sequence):
                 img_features = np.average(img_features, axis=0)
                 img_features = np.average(img_features, axis=0)
             else:
-                img_features = img_features.ravel()        
+                img_features = img_features.ravel()
         return img_features
 
     def _generate_X(self, indices):
         X = []
         for input_type_idx, input_type in enumerate(self.input_type_list):
             features_batch = np.empty((self.batch_size, *self.data_sizes[input_type_idx]))
-            num_ch = features_batch.shape[-1]//len(self.data[input_type_idx][0])
+            num_ch = features_batch.shape[-1] // len(self.data[input_type_idx][0])
             for i, index in enumerate(indices):
                 if isinstance(self.data[input_type_idx][index][0], str):
                     cached_path_list = self.data[input_type_idx][index]
@@ -796,11 +440,10 @@ class DataGenerator(Sequence):
                             img_features = self._get_img_features(cached_path)
 
                         if len(cached_path_list) == 1:
-                            # for static model if only one image in the sequence
                             features_batch[i, ] = img_features
                         else:
                             if self.stack_feats and 'flow' in input_type:
-                                features_batch[i,...,j*num_ch:j*num_ch+num_ch] = img_features
+                                features_batch[i, ..., j * num_ch:j * num_ch + num_ch] = img_features
                             else:
                                 features_batch[i, j, ] = img_features
                 else:
@@ -809,14 +452,54 @@ class DataGenerator(Sequence):
         return X
 
     def _generate_y(self, indices):
-        if 'depth' in self.input_type_list:
-            # # 如果有深度图，labels[0]是行人过街意图标签，labels[1]是下一帧的xy坐标
-            # intention_labels = np.array(self.labels[0][indices])
-            # etraj_labels = np.array(self.labels[1][indices])  # 下一帧xy坐标
-            # return [intention_labels, etraj_labels]
-            return np.array(self.labels[indices])
+        if isinstance(self.labels, list) and len(self.labels) > 1:
+            intention_labels = np.array(self.labels[0][indices])
+            etraj_labels = np.array(self.labels[1][indices]) if self.labels[1] is not None else None
+            return [intention_labels, etraj_labels]
         else:
-            return np.array(self.labels[indices])
+            if isinstance(self.labels, list):
+                return np.array(self.labels[0][indices])
+            else:
+                return np.array(self.labels[indices])
+
+    def _generate_sample_weight(self, y):
+        """
+        统一规则（无配置、无模式）：
+        - intention：按类不平衡自动权重（class_weight）
+        - etraj：    与 intention 完全一致（按 y_int 的 class_weight），
+                     这样“正类/负类轨迹”自然得到不同权重，且不需要手动设置任何参数。
+        """
+        if isinstance(y, list) and len(y) > 1:
+            y_int = np.asarray(y[0]).astype(np.int32).reshape(-1)
+            etraj_labels = y[1]
+
+            # intention 权重
+            if self.class_weight is not None:
+                sw_int = np.where(y_int == 1, self.class_weight[1], self.class_weight[0]).astype('float32')
+            else:
+                sw_int = np.ones_like(y_int, dtype='float32')
+
+            # etraj 权重 = intention 权重（无需配置）
+            sw_etraj = sw_int.copy()
+
+            # 若轨迹标签缺失/无效（比如 NaN/Inf），则将该样本的 etraj 权重置 0，避免污染回归损失
+            if etraj_labels is None:
+                sw_etraj[:] = 0.0
+            else:
+                etraj_np = np.asarray(etraj_labels)
+                invalid = ~np.isfinite(etraj_np).all(axis=1)
+                if invalid.any():
+                    sw_etraj[invalid] = 0.0
+
+            return {'intention': sw_int, 'etraj': sw_etraj}
+
+        else:
+            y_int = np.asarray(y).astype(np.int32).reshape(-1)
+            if self.class_weight is not None:
+                sw = np.where(y_int == 1, self.class_weight[1], self.class_weight[0]).astype('float32')
+            else:
+                sw = np.ones_like(y_int, dtype='float32')
+            return sw
 
 @tf.keras.utils.register_keras_serializable()
 class CLSTokenLayer(tf.keras.layers.Layer):
@@ -836,11 +519,10 @@ class CLSTokenLayer(tf.keras.layers.Layer):
         # 返回可广播的 token tensor
         return tf.tile(self.cls_token, [batch_size, 1, 1])
 
+    @tf.autograph.experimental.do_not_convert
     def get_config(self):
         config = super().get_config()
-        config.update({
-            "d_model": self.d_model
-        })
+        config.update({"d_model": self.d_model})
         return config
 
 
@@ -1013,28 +695,23 @@ class Transformer_depth(ActionPredict):
         # x = self.fem_block(x, dropout = 0.2, name='fem_after_mhsa_2')
 
         cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
-        cls_out = Dropout(0.2, name='cls_dropout')(cls_out)
-        h = Dense(128, activation='gelu', kernel_regularizer=regularizers.l2(5e-3), name='head_fc1')(cls_out)
+        
+        # —— Intention head
+        ci = Dropout(0.2, name='cls_dropout')(cls_out)
+        h = Dense(128, activation='gelu', kernel_regularizer=regularizers.l2(5e-3), name='head_fc1')(ci)
         h = Dropout(0.1, name='head_dropout1')(h)
         intention = Dense(1, activation='sigmoid', name='intention')(h)
 
-        # === Head: ViT-style with logits ===
-        # cls_out = Lambda(lambda t: t[:, 0, :], name='cls_slice')(x)
-        # cls_out = LayerNormalization(name='cls_prelayernorm')(cls_out)   
-        # h = Dense(2 * self.d_model, activation=gelu,
-        #         kernel_regularizer=regularizers.L2(3e-4),
-        #         name='head_fc1')(cls_out)
-        # h = Dropout(0.2, name='head_dropout1')(h)
-        # h = Dense(self.d_model, activation=gelu,
-        #         kernel_regularizer=regularizers.L2(3e-4),
-        #         name='head_fc2')(h)
-        # h = Dropout(self.dropout, name='head_dropout2')(h)
+        # —— Etraj head（独立分支）
+        ce = Dropout(0.1, name='cls_dropout_e')(cls_out)
+        e = Dense(128, activation='gelu', kernel_regularizer=regularizers.l2(5e-4), name='head_fc2')(ce)
+        e = Dropout(0.1, name='head_dropout2')(e)
+        etraj = Dense(4, activation=None, name='etraj')(e)
 
-        # logit = Dense(1, name='intention_logit')(h)
-        # intention = Activation('sigmoid', name='intention')(logit)
+        model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in],
+                      outputs=[intention, etraj],
+                      name='Transformer_depth')
 
-
-        model = Model(inputs=[bbox_in, depth_in, vehspd_in, pedspd_in], outputs=intention, name='Transformer_depth')
         return model
 
     def get_data(self, data_type, data_raw, model_opts):
@@ -1045,12 +722,6 @@ class Transformer_depth(ActionPredict):
         process = model_opts.get('process', True)
         dataset = model_opts['dataset']
         data, neg_count, pos_count = self.get_data_sequence(data_type, data_raw, model_opts)
-        # data = convert_array_of_lists_to_list_of_arrays()
-        # data_type_sizes_dict['box'] = data['box'].shape[1:]
-        # if 'speed' in data.keys():
-        #     data_type_sizes_dict['speed'] = data['speed'].shape[1:]
-        # # if 'context_cnn' in data.keys():
-        #     data_type_sizes_dict['context_cnn'] = data['context_cnn'].shape[1:]
 
         # Store the type and size of each image
         _data = []
@@ -1071,7 +742,7 @@ class Transformer_depth(ActionPredict):
         # create the final data file to be returned
         if self._generator:
             _data = (DataGenerator(data=_data,
-                                   labels=data['crossing'],
+                                   labels=[data['crossing'], data['trajectory']],
                                    data_sizes=data_sizes,
                                    process=process,
                                    global_pooling=None,
@@ -1091,314 +762,143 @@ class Transformer_depth(ActionPredict):
                 'count': {'neg_count': neg_count, 'pos_count': pos_count}}
 
     def get_data_sequence(self, data_type, data_raw, opts):
-        # print('\n#####################################')
-        # print('Generating raw data')
-        # print('#####################################')
-##########################################################################################
-# 处理JAAD数据集
-        if opts['dataset'] == 'jaad':
-            d = {'center': data_raw['center'].copy(),
-                'box': data_raw['bbox'].copy(),
-                'ped_id': data_raw['pid'].copy(),
-                'crossing': data_raw['activities'].copy(),
-                'image': data_raw['image'].copy()}
+        dataset = opts['dataset']  # 'jaad' 或 'pie'
+        d = {
+            'center': data_raw['center'].copy(),
+            'box': data_raw['bbox'].copy(),
+            'ped_id': data_raw['pid'].copy(),
+            'crossing': data_raw['activities'].copy(),
+            'image': data_raw['image'].copy()
+        }
 
-            balance = opts['balance_data'] if data_type == 'train' else False
-            obs_length = opts['obs_length']
-            time_to_event = opts['time_to_event']
-            normalize = opts['normalize_boxes']
+        balance = opts['balance_data'] if data_type == 'train' else False
+        obs_length = opts['obs_length']
+        time_to_event = opts['time_to_event']
+        normalize = opts['normalize_boxes']
 
-            try:
-                d['speed'] = data_raw['obd_speed'].copy()
-            except KeyError:
-                d['speed'] = data_raw['vehicle_act'].copy()
-                # print('Jaad dataset does not have speed information')
-                # print('Vehicle actions are used instead')
-            if balance:
-                self.balance_data_samples(d, data_raw['image_dimension'][0])
-            # d['box_org'] = d['box'].copy()
-            d['tte'] = []
+        # 加速度信息
+        try:
+            d['speed'] = data_raw['obd_speed'].copy()
+        except KeyError:
+            d['speed'] = data_raw['vehicle_act'].copy()
 
-            if isinstance(time_to_event, int):
-                for k in d.keys():
-                    for i in range(len(d[k])):
-                        d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
-                d['tte'] = [[time_to_event]]*len(data_raw['bbox'])
-            else:
-                overlap = opts['overlap'] # if data_type == 'train' else 0.0
-                olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
-                olap_res = 1 if olap_res < 1 else olap_res
-                for k in d.keys():
-                    seqs = []
-                    for seq in d[k]:
-                        start_idx = len(seq) - obs_length - time_to_event[1]
-                        end_idx = len(seq) - obs_length - time_to_event[0]
-                        seqs.extend([seq[i:i + obs_length] for i in
-                                    range(start_idx, end_idx + 1, olap_res)])
-                    d[k] = seqs
+        if balance:
+            self.balance_data_samples(d, data_raw['image_dimension'][0])
 
-            d['ped_center_diff'] = []
-            for idx, seq in enumerate(data_raw['bbox']):
-                diffs = []
-                for j in range(1, len(seq)):
-                    diff = np.array(seq[j]) - np.array(seq[j-1])
-                    diffs.append(diff)
-                # 将第一个差值复制放在开头以保持序列长度
-                diffs = [diffs[0]] + diffs
+        d['tte'] = []
 
-                start_idx = len(seq) - obs_length - time_to_event[1]
-                end_idx = len(seq) - obs_length - time_to_event[0]
-                d['ped_center_diff'].extend([diffs[i:i + obs_length] for i in
-                                             range(start_idx, end_idx + 1, olap_res)])
-
-
-            # 计算深度信息，先检查缓存
-            import os
-            import pickle
-            
-            cache_dir = 'JAAD/data_cache'
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir)
-            
-            # 生成唯一的缓存文件名
-            cache_filename = f'depth_{self.dataset}_{self.sample}_{data_type}_obs{obs_length}_tte{time_to_event[0]}-{time_to_event[1]}_overlap{overlap}.pkl'
-            cache_path = os.path.join(cache_dir, cache_filename)
-            
-            # 检查缓存文件是否存在
-            if os.path.exists(cache_path):
-                # print(f"Loading depth data from cache: {cache_path}")
-                with open(cache_path, 'rb') as f:
-                    d['depth'] = pickle.load(f)
-                # print(f"Loaded {len(d['depth'])} depth sequences from cache")
-            else:
-                # print(f"Computing depth data and saving to cache: {cache_path}")
-                # 计算深度信息
-                d['depth'] = []
-                for idx, seq in enumerate(data_raw['bbox']):
+        # ========== 切片序列 ==========
+        if isinstance(time_to_event, int):
+            for k in d.keys():
+                for i in range(len(d[k])):
+                    d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
+            d['tte'] = [[time_to_event]] * len(data_raw['bbox'])
+        else:
+            overlap = opts['overlap']  # if data_type == 'train' else 0.0
+            olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
+            olap_res = 1 if olap_res < 1 else olap_res
+            for k in d.keys():
+                seqs = []
+                for seq in d[k]:
                     start_idx = len(seq) - obs_length - time_to_event[1]
                     end_idx = len(seq) - obs_length - time_to_event[0]
-                    d['tte'].extend([[len(seq) - (i + obs_length)] for i in
-                                    range(start_idx, end_idx + 1, olap_res)])
-                    images = data_raw['image'][idx][start_idx:end_idx + obs_length + 1]
-                    boxes = data_raw['bbox'][idx][start_idx:end_idx + obs_length + 1]
-                    depth_seq = []
-                    for image_path, box in zip(images, boxes):
-                        # 修改图像路径：将 'images' 替换为 'image_depth_gray'
-                        depth_image_path = image_path.replace('/images/', '/image_depth_gray/')     
-                        # 读取图像
-                        img = cv2.imread(depth_image_path)
-                        # if img is None:
-                        #     print(f"Warning: Cannot read image {depth_image_path}")
-                        #     # depth_seq.append(0.0)  # 或者跳过
-                        #     continue
-                        # 获取图像尺寸和边界框坐标
-                        img_height, img_width = img.shape[:2]
-                        x1, y1, x2, y2 = box
-                        
-                        # 确保边界框坐标在有效范围内
-                        x1 = max(0, min(int(x1), img_width - 1))
-                        y1 = max(0, min(int(y1), img_height - 1))
-                        x2 = max(x1 + 1, min(int(x2), img_width))
-                        y2 = max(y1 + 1, min(int(y2), img_height))
-                        
-                        # 提取边界框区域
-                        bbox_region = img[y1:y2, x1:x2]
-                        
-                        if bbox_region.size == 0:
-                            print(f"Warning: Empty bbox region for image {image_path}")
-                            depth_seq.append(None)
-                            continue
-                        
-                        # 计算像素平均值（所有通道的平均值）
-                        pixel_mean = np.mean(bbox_region)
-                        depth_seq.append(float(pixel_mean))
-                    d['depth'].extend([depth_seq[i:i + obs_length] for i in
-                                    range(0, end_idx - start_idx + 1, olap_res)])
-                    
-                    # 显示进度
-                    if (idx + 1) % 10 == 0:
-                        print(f"Processed depth for {idx + 1}/{len(data_raw['bbox'])} sequences")
+                    seqs.extend([seq[i:i + obs_length] for i in
+                                range(start_idx, end_idx + 1, olap_res)])
+                d[k] = seqs
 
-                # 保存到缓存
-                # print(f"Saving depth data to cache: {cache_path}")
-                with open(cache_path, 'wb') as f:
-                    pickle.dump(d['depth'], f, pickle.HIGHEST_PROTOCOL)
-                # print(f"Saved {len(d['depth'])} depth sequences to cache")        
-            
-            if normalize:
-                for k in d.keys():
-                    if k != 'tte':
-                        if k != 'box' and k != 'center':
-                            for i in range(len(d[k])):
-                                d[k][i] = d[k][i][1:]
-                        else:
-                            for i in range(len(d[k])):
-                                d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
-                    d[k] = np.array(d[k])
-            else:
-                for k in d.keys():
-                    d[k] = np.array(d[k])
+        # ========== 计算 ped_center_diff 与 轨迹（4维 bbox ==========
+        d['ped_center_diff'] = []
+        d['trajectory'] = []
+        for idx, seq in enumerate(data_raw['bbox']):
+            # 帧间差分
+            diffs = []
+            for j in range(1, len(seq)):
+                diff = np.array(seq[j]) - np.array(seq[j - 1])
+                diffs.append(diff)
+            diffs = [diffs[0]] + diffs
 
-            d['crossing'] = np.array(d['crossing'])[:, 0, :]
-            pos_count = np.count_nonzero(d['crossing'])
-            neg_count = len(d['crossing']) - pos_count
-            # print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
+            start_idx = len(seq) - obs_length - time_to_event[1]
+            end_idx = len(seq) - obs_length - time_to_event[0]
+            d['ped_center_diff'].extend([diffs[i:i + obs_length] for i in
+                                            range(start_idx, end_idx + 1, 1 if overlap == 0 else int((1 - overlap) * obs_length))])
+            # 下一帧 4维 bbox（像素坐标）
+            # d['trajectory'].extend([[seq[i + obs_length][0] / data_raw['image_dimension'][0], seq[i + obs_length][1] / data_raw['image_dimension'][1],
+            #                          seq[i + obs_length][2] / data_raw['image_dimension'][0], seq[i + obs_length][3] / data_raw['image_dimension'][1]]
+            #                         for i in range(start_idx, end_idx + 1, 1 if overlap == 0 else int((1 - overlap) * obs_length))])
+            d['trajectory'].extend([[seq[i + obs_length][0] + time_to_event[0] - 1, seq[i + obs_length][1] + time_to_event[0] - 1,
+                                        seq[i + obs_length][2] + time_to_event[0] - 1, seq[i + obs_length][3] + time_to_event[0] - 1]
+                                    for i in range(start_idx, end_idx + 1, 1 if overlap == 0 else int((1 - overlap) * obs_length))])
 
-##########################################################################################
-# 处理PIE数据集
-        if opts['dataset'] == 'pie':
-            d = {'center': data_raw['center'].copy(),
-                'box': data_raw['bbox'].copy(),
-                'ped_id': data_raw['pid'].copy(),
-                'crossing': data_raw['activities'].copy(),
-                'image': data_raw['image'].copy()}
+        # ========== 深度信息 ==========
+        import os, pickle
+        cache_dir = f'{dataset.upper()}/data_cache'
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
 
-            balance = opts['balance_data'] if data_type == 'train' else False
-            obs_length = opts['obs_length']
-            time_to_event = opts['time_to_event']
-            normalize = opts['normalize_boxes']
+        cache_filename = (
+            f'depth_{self.dataset}_{self.sample}_{data_type}_'
+            f'obs{obs_length}_tte{time_to_event[0]}-{time_to_event[1]}_overlap{overlap}.pkl'
+            if dataset == 'jaad' else
+            f'depth_{self.dataset}_obs{obs_length}_tte{time_to_event[0]}-{time_to_event[1]}_overlap{overlap}.pkl'
+        )
+        cache_path = os.path.join(cache_dir, cache_filename)
 
-            try:
-                d['speed'] = data_raw['obd_speed'].copy()
-            except KeyError:
-                d['speed'] = data_raw['vehicle_act'].copy()
-                print('Jaad dataset does not have speed information')
-                print('Vehicle actions are used instead')
-            if balance:
-                self.balance_data_samples(d, data_raw['image_dimension'][0])
-            d['box_org'] = d['box'].copy()
-            d['tte'] = []
-
-            if isinstance(time_to_event, int):
-                for k in d.keys():
-                    for i in range(len(d[k])):
-                        d[k][i] = d[k][i][- obs_length - time_to_event:-time_to_event]
-                d['tte'] = [[time_to_event]]*len(data_raw['bbox'])
-            else:
-                overlap = opts['overlap'] # if data_type == 'train' else 0.0
-                olap_res = obs_length if overlap == 0 else int((1 - overlap) * obs_length)
-                olap_res = 1 if olap_res < 1 else olap_res
-                for k in d.keys():
-                    seqs = []
-                    for seq in d[k]:
-                        start_idx = len(seq) - obs_length - time_to_event[1]
-                        end_idx = len(seq) - obs_length - time_to_event[0]
-                        seqs.extend([seq[i:i + obs_length] for i in
-                                    range(start_idx, end_idx + 1, olap_res)])
-
-                        # # 计算序列长度
-                        # sequence_length = len([seq[i:i + obs_length] for i in
-                        #             range(start_idx, end_idx + 1, olap_res)])
-                        # # 记录到文件
-                        # with open(f'sequence_lengths_{data_type}_{self.dataset}_{self.sample}.txt', 'a') as log_file:
-                        #     log_file.write(f"{start_idx:4d}, {end_idx:4d}, {sequence_length:4d}\n")
-                    d[k] = seqs
-
-            d['ped_center_diff'] = []
+        if os.path.exists(cache_path):
+            with open(cache_path, 'rb') as f:
+                d['depth'] = pickle.load(f)
+        else:
+            d['depth'] = []
             for idx, seq in enumerate(data_raw['bbox']):
-                diffs = []
-                for j in range(1, len(seq)):
-                    diff = np.array(seq[j]) - np.array(seq[j-1])
-                    diffs.append(diff)
-                # 将第一个差值复制放在开头以保持序列长度
-                diffs = [diffs[0]] + diffs
-
                 start_idx = len(seq) - obs_length - time_to_event[1]
                 end_idx = len(seq) - obs_length - time_to_event[0]
-                d['ped_center_diff'].extend([diffs[i:i + obs_length] for i in
-                                             range(start_idx, end_idx + 1, olap_res)])
+                d['tte'].extend([[len(seq) - (i + obs_length)] for i in
+                                range(start_idx, end_idx + 1, olap_res)])
+                images = data_raw['image'][idx][start_idx:end_idx + obs_length + 1]
+                boxes = data_raw['bbox'][idx][start_idx:end_idx + obs_length + 1]
+                depth_seq = []
+                for image_path, box in zip(images, boxes):
+                    depth_image_path = image_path.replace('/images/', '/images_depth_gray/')
+                    img = cv2.imread(depth_image_path)
+                    img_height, img_width = img.shape[:2]
+                    x1, y1, x2, y2 = box
+                    x1 = max(0, min(int(x1), img_width - 1))
+                    y1 = max(0, min(int(y1), img_height - 1))
+                    x2 = max(x1 + 1, min(int(x2), img_width))
+                    y2 = max(y1 + 1, min(int(y2), img_height))
+                    bbox_region = img[y1:y2, x1:x2]
+                    if bbox_region.size == 0:
+                        print(f"Warning: Empty bbox region for image {image_path}")
+                        depth_seq.append(None)
+                        continue
+                    pixel_mean = np.mean(bbox_region)
+                    depth_seq.append(float(pixel_mean))
+                d['depth'].extend([depth_seq[i:i + obs_length] for i in
+                                range(0, end_idx - start_idx + 1, olap_res)])
+                if (idx + 1) % 10 == 0:
+                    print(f"Processed depth for {idx + 1}/{len(data_raw['bbox'])} sequences")
 
+            with open(cache_path, 'wb') as f:
+                pickle.dump(d['depth'], f, pickle.HIGHEST_PROTOCOL)
 
-            # 计算深度信息，先检查缓存
-            import os
-            import pickle
-            
-            cache_dir = 'PIE/data_cache'
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir)
-            
-            # 生成唯一的缓存文件名
-            cache_filename = f'depth_{self.dataset}_obs{obs_length}_tte{time_to_event[0]}-{time_to_event[1]}_overlap{overlap}.pkl'
-            cache_path = os.path.join(cache_dir, cache_filename)
-            
-            # 检查缓存文件是否存在
-            if os.path.exists(cache_path):
-                print(f"Loading depth data from cache: {cache_path}")
-                with open(cache_path, 'rb') as f:
-                    d['depth'] = pickle.load(f)
-                print(f"Loaded {len(d['depth'])} depth sequences from cache")
-            else:
-                print(f"Computing depth data and saving to cache: {cache_path}")
-                # 计算深度信息
-                d['depth'] = []
-                for idx, seq in enumerate(data_raw['bbox']):
-                    start_idx = len(seq) - obs_length - time_to_event[1]
-                    end_idx = len(seq) - obs_length - time_to_event[0]
-                    d['tte'].extend([[len(seq) - (i + obs_length)] for i in
-                                    range(start_idx, end_idx + 1, olap_res)])
-                    images = data_raw['image'][idx][start_idx:end_idx + obs_length + 1]
-                    boxes = data_raw['bbox'][idx][start_idx:end_idx + obs_length + 1]
-                    depth_seq = []
-                    for image_path, box in zip(images, boxes):
-                        # 修改图像路径：将 'images' 替换为 'image_depth_gray'
-                        depth_image_path = image_path.replace('/images/', '/images_depth_gray/')     
-                        # 读取图像
-                        img = cv2.imread(depth_image_path)
-                        # if img is None:
-                        #     print(f"Warning: Cannot read image {depth_image_path}")
-                        #     # depth_seq.append(0.0)  # 或者跳过
-                        #     continue
-                        # 获取图像尺寸和边界框坐标
-                        img_height, img_width = img.shape[:2]
-                        x1, y1, x2, y2 = box
-                        
-                        # 确保边界框坐标在有效范围内
-                        x1 = max(0, min(int(x1), img_width - 1))
-                        y1 = max(0, min(int(y1), img_height - 1))
-                        x2 = max(x1 + 1, min(int(x2), img_width))
-                        y2 = max(y1 + 1, min(int(y2), img_height))
-                        
-                        # 提取边界框区域
-                        bbox_region = img[y1:y2, x1:x2]
-                        
-                        if bbox_region.size == 0:
-                            print(f"Warning: Empty bbox region for image {image_path}")
-                            depth_seq.append(None)
-                            continue
-                        
-                        # 计算像素平均值（所有通道的平均值）
-                        pixel_mean = np.mean(bbox_region)
-                        depth_seq.append(float(pixel_mean))
-                    d['depth'].extend([depth_seq[i:i + obs_length] for i in
-                                    range(0, end_idx - start_idx + 1, olap_res)])
-                    
-                    # 显示进度
-                    if (idx + 1) % 10 == 0:
-                        print(f"Processed depth for {idx + 1}/{len(data_raw['bbox'])} sequences")
+        # ========== 归一化 ==========
+        if normalize:
+            for k in d.keys():
+                if k != 'tte':
+                    if k != 'box' and k != 'center':
+                        for i in range(len(d[k])):
+                            d[k][i] = d[k][i][1:]
+                    else:
+                        for i in range(len(d[k])):
+                            d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
+                d[k] = np.array(d[k])
+        else:
+            for k in d.keys():
+                d[k] = np.array(d[k])
 
-                # 保存到缓存
-                print(f"Saving depth data to cache: {cache_path}")
-                with open(cache_path, 'wb') as f:
-                    pickle.dump(d['depth'], f, pickle.HIGHEST_PROTOCOL)
-                print(f"Saved {len(d['depth'])} depth sequences to cache")        
-            
-            if normalize:
-                for k in d.keys():
-                    if k != 'tte':
-                        if k != 'box' and k != 'center':
-                            for i in range(len(d[k])):
-                                d[k][i] = d[k][i][1:]
-                        else:
-                            for i in range(len(d[k])):
-                                d[k][i] = np.subtract(d[k][i][1:], d[k][i][0]).tolist()
-                    d[k] = np.array(d[k])
-            else:
-                for k in d.keys():
-                    d[k] = np.array(d[k])
-
-            d['crossing'] = np.array(d['crossing'])[:, 0, :]
-            pos_count = np.count_nonzero(d['crossing'])
-            neg_count = len(d['crossing']) - pos_count
+        d['crossing'] = np.array(d['crossing'])[:, 0, :]
+        pos_count = np.count_nonzero(d['crossing'])
+        neg_count = len(d['crossing']) - pos_count
+        if dataset == 'pie':
             print("Negative {} and positive {} sample counts".format(neg_count, pos_count))
 
         return d, neg_count, pos_count
